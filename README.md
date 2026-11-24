@@ -139,3 +139,32 @@ smaller than the area, so the numbered map is the landmark.
 **Show-off clip** (`python -m route.scan_render --draft`): the scan sweep and heat map, the top 5,
 the winner's route drawing itself with the counter, then "average drop 24 / this route 31".
 Ideas for the editor are in `docs/overlay-ideas.md` (a list only, nothing built).
+
+## Drop planner
+
+Open [planner/index.html](planner/index.html) in a browser. Drag the Battle Bus
+line in its direction of travel or use the sample bus. Start the flyover,
+then press Space or → to advance, ← to go back, and Esc for the route overview.
+The controls work with touch as well.
+
+The planner uses the November 24, 2026 Crossbones Isle v43.11 game minimap and a
+matching [SequeLariFN chest snapshot](https://www.sequelarifn.com.br/dados/mapa-objetos).
+It precomputes 108 routes from 36 directed headings and three offsets each.
+Of the 1,007 chest records, 901 are standard chests at 900 unique map positions.
+Rare and buried records are retained in the CSV for reference. Landing labels
+use the nearest named POI. Chest availability varies by match. Movement,
+storm timing and distances are model estimates.
+
+The minimap is kept out of Git. In a fresh checkout with the Python dependencies
+above, download the pinned game asset before opening the page:
+
+```bash
+.venv/bin/python -c 'from urllib.request import urlopen; from PIL import Image; from io import BytesIO; from route.planner_source import MAP_IMAGE, MAP_IMAGE_URL; Image.open(BytesIO(urlopen(MAP_IMAGE_URL).read())).save(MAP_IMAGE, lossless=True)'
+```
+
+The browser loads the precomputed snapshot directly, including when opened as a
+local file. Regenerate both the JSON and browser snapshot after model changes:
+
+```bash
+.venv/bin/python scripts/export_planner.py
+```

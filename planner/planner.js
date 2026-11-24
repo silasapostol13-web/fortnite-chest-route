@@ -28,7 +28,9 @@ const clock = seconds => {
 };
 
 function overviewCamera() {
-  return [data.width / 2, data.height / 2, Math.min(size.w / data.width, size.h * .88 / data.height) * .98];
+  // The game raster includes open ocean beyond the island on every side.
+  return [data.width * .53, data.height * .55,
+    Math.min(size.w / (data.width * .74), size.h * .78 / (data.height * .69))];
 }
 
 function routeCamera() {
@@ -37,13 +39,13 @@ function routeCamera() {
   const ys = points.map(p => p[1]);
   const left = Math.min(...xs), right = Math.max(...xs);
   const top = Math.min(...ys), bottom = Math.max(...ys);
-  const scale = Math.min(size.w * .72 / (right - left + 80), size.h * .55 / (bottom - top + 80), overviewCamera()[2] * 4);
+  const scale = Math.min(size.w * .72 / (right - left + 80), size.h * .55 / (bottom - top + 80), overviewCamera()[2] * 5);
   return [(left + right) / 2, (top + bottom) / 2, scale];
 }
 
 function chestCamera(index) {
   const [x, y] = selected.chests[index];
-  return [x, y, Math.min(size.w, size.h) / (data.width * .19)];
+  return [x, y, Math.min(size.w, size.h) / (data.width * .14)];
 }
 
 function destinationCamera() {
@@ -157,29 +159,43 @@ function draw(now) {
       .map((leg, i) => segment(leg.path, Math.min(1, count - i)));
     paths.forEach(path => line(path, "#15130def", 8));
     paths.forEach(path => line(path, gold, 4));
-    const last = mode === "fly" ? Math.ceil(revealed) : selected.chests.length - 1;
-    const active = mode === "fly" ? Math.round(revealed) : 0;
+    if (mode === "fly" && count % 1 > 0) {
+      const tip = paths.at(-1).at(-1);
+      circle(...screen(tip), 4, "#fff2b2", "#15130d", 1.5);
+    }
+    const last = mode === "fly" ? Math.floor(revealed + 1e-6) : selected.chests.length - 1;
+    const active = mode === "fly" ? last : 0;
     const ground = selected.chests[active];
-    if (!reducedMotion.matches) {
+    if (!motion && !reducedMotion.matches) {
       const [x, y] = screen(ground);
       const pulse = (now % 1500) / 1500;
       circle(x, y, 15 + pulse * 23, "transparent", `rgba(255, 211, 83, ${(1 - pulse) * .65})`);
     }
-    for (let i = last; i >= 0; i--) {
-      if (i !== active) drawPin(i);
-    }
-    drawPin(active);
+    drawPins(last, active);
     if (mode !== "fly" || active === 0) drawLandingLabel();
   }
   if (drag) busLine([drag.start, drag.end], "#fff");
   if (motion || (selected && !reducedMotion.matches)) requestDraw();
 }
 
-function drawPin(index) {
+function drawPins(last, active) {
+  const labeled = [active];
+  if (active !== 0) labeled.push(0);
+  for (let i = last; i >= 1; i--) {
+    if (i === active) continue;
+    const point = selected.chests[i];
+    const overlaps = labeled.some(index => distance(point, selected.chests[index]) * camera[2] < 21);
+    if (overlaps) circle(...screen(point), 3.5, gold, "#141519", 1.5);
+    else labeled.push(i);
+  }
+  labeled.reverse().forEach(index => drawPin(index, index === active));
+}
+
+function drawPin(index, active) {
   const [x, y] = screen(selected.chests[index]);
-  const radius = mode === "fly" ? 12 : index === 0 ? 12 : 9;
+  const radius = active || index === 0 ? 12 : 8;
   circle(x, y, radius, index === 0 ? red : gold, "#141519", 2.5);
-  ctx.font = `850 ${mode === "fly" ? 12 : 10}px system-ui`;
+  ctx.font = `850 ${active ? 12 : 10}px system-ui`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = "#17140d";
@@ -231,7 +247,9 @@ function updateUI() {
   ui.title.textContent = flying && step > 0 ? `Chest ${step + 1} / ${selected.chests.length}` : planned ? selected.name : "Draw your bus path";
   if (leg) {
     const angle = heading(selected.chests[step - 1], selected.chests[step]);
-    ui.detail.textContent = `${Math.round(angle) % 360}° ${compass(angle)}  ·  about ${leg.meters} m  ·  about ${Math.round(leg.seconds)} s`;
+    const meters = leg.meters ? `about ${leg.meters} m` : "under 1 m";
+    const seconds = leg.seconds >= .5 ? `about ${Math.round(leg.seconds)} s` : "under 1 s";
+    ui.detail.textContent = `${Math.round(angle) % 360}° ${compass(angle)}  ·  ${meters}  ·  ${seconds}`;
   } else if (planned) {
     ui.detail.textContent = flying
       ? `Chest 1 / ${selected.chests.length}  ·  land on the red pin`
@@ -269,7 +287,7 @@ function selectRoute(route) {
 function next() {
   if (!ready || motion) return;
   if (!selected) {
-    selectRoute(data.routes.find(route => route.heading === 90 && route.offset === 0));
+    selectRoute(data.routes.find(route => route.heading === 300 && route.offset === -240));
   } else if (mode !== "fly") {
     activate("fly", 0, 900);
   } else if (step < selected.chests.length - 1) {
@@ -343,7 +361,7 @@ function resize() {
 }
 
 if (data) {
-  ui.version.textContent = `${data.version} · ${data.count} mapped spawns`;
+  ui.version.textContent = `${data.version} · ${data.count} standard spots`;
   map.onload = () => { ready = true; updateUI(); requestDraw(); };
   map.onerror = () => { ui.detail.textContent = "Map asset failed to load. See the project README."; };
   new ResizeObserver(resize).observe(canvas);

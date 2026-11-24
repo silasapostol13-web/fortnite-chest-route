@@ -53,10 +53,10 @@ def water_mask_image(image_path=MAP_IMAGE):
     return (r < 90) & (b > 110) & (b > r + 60) & (b >= g - 25)
 
 
-def build_cell_water(image_path=MAP_IMAGE, cell_px=P.CELL_PX):
+def build_cell_water(image_path=MAP_IMAGE, cell_px=P.CELL_PX, map_size=P.MAP_LOGICAL_SIZE):
     """(rows, cols) bool grid in logical-pixel cells: True = mostly water."""
     water = water_mask_image(image_path)
-    lw, lh = P.MAP_LOGICAL_SIZE
+    lw, lh = map_size
     cols, rows = int(np.ceil(lw / cell_px)), int(np.ceil(lh / cell_px))
     sx, sy = water.shape[1] / lw, water.shape[0] / lh
     out = np.zeros((rows, cols), dtype=bool)
@@ -132,10 +132,16 @@ def travel_matrix(use_cache=True, verbose=False):
     path = CACHE_DIR / f"travel_{_cache_key()}.npy"
     if use_cache and path.exists():
         return np.load(path)
-    ids, _, xy = load_spawns()
-    n = len(ids)
-    cell_water = build_cell_water()
-    graph = build_grid_graph(cell_water)
+    _, _, xy = load_spawns()
+    T = compute_travel_matrix(xy, build_grid_graph(build_cell_water()), verbose=verbose)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    np.save(path, T)
+    return T
+
+
+def compute_travel_matrix(xy, graph, verbose=False):
+    """Build travel times for coordinates on an already constructed walk grid."""
+    n = len(xy)
     cells = [cell_of(x, y) for x, y in xy]
     by_cell = {}
     for i, cell in enumerate(cells):
@@ -157,17 +163,14 @@ def travel_matrix(use_cache=True, verbose=False):
         if verbose and count % 100 == 0:
             print(f"  dijkstra {count}/{len(by_cell)}")
     T = np.minimum(T, T.T)  # walking is symmetric; removes rounding asymmetry
-    floyd_warshall(T)
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    np.save(path, T)
-    return T
+    return floyd_warshall(T)
 
 
 class LegPather:
     """Exact walking path for one leg, from Silas's own Graph.dijkstra."""
 
-    def __init__(self):
-        self.cell_water = build_cell_water()
+    def __init__(self, image_path=MAP_IMAGE, map_size=P.MAP_LOGICAL_SIZE):
+        self.cell_water = build_cell_water(image_path, map_size=map_size)
         self.graph = build_grid_graph(self.cell_water)
 
     def path(self, a_xy, b_xy):
