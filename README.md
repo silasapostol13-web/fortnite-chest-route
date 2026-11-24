@@ -168,3 +168,21 @@ local file. Regenerate both the JSON and browser snapshot after model changes:
 ```bash
 .venv/bin/python scripts/export_planner.py
 ```
+
+**Reliable loot** ranks routes by expected chest openings, counting each
+guaranteed spawn as one and weighting each random spawn by the slider. The
+recommendation can stay the same if it already scores highest among the
+routes the heuristic evaluates. In **Edit bus**, the blue line is the path you
+drew. The dashed white line is the snapped path used by the route model.
+
+Click numbered pins or use **Jump to** to inspect a route stop. During the
+flyover, press **X** or **Empty chest** to record a miss and replan from that
+location using the estimated time left. The route keeps the previous stops and
+marks the missing chest with an ×. It assumes the other visited chests were opened.
+
+Regenerate the browser’s travel network after changing the map, spawn data,
+or movement model:
+
+```bash
+.venv/bin/python scripts/export_planner_network.py
+```

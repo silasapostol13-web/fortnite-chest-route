@@ -10,7 +10,16 @@ const map = new Image();
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 const gold = "#ffd453";
 const red = "#ff4e65";
-let size, camera, motion, selected, drag;
+let size, camera, motion, selected, drag, drawnBus, baseRoute;
+let reliableMode = false;
+let notice = "";
+let landedAt = 0;
+let displayedRoute;
+let pinTargets = [];
+const misses = new Set();
+const chance = () => Number(ui.chance.value) / 100;
+const skipped = point => loot && misses.has(loot.id(point));
+const selectEnabled = () => Boolean(loot && selected);
 let mode = "plan";
 let step = 0;
 let revealed = 0;
@@ -96,8 +105,8 @@ function circle(x, y, radius, color, stroke, width = 2) {
   }
 }
 
-function busLine([a, b], color) {
-  ctx.setLineDash([8, 8]);
+function busLine([a, b], color, dashed = true) {
+  ctx.setLineDash(dashed ? [8, 8] : []);
   line([a, b], "#0b1119b0", 6);
   line([a, b], color, 2);
   ctx.setLineDash([]);
@@ -144,6 +153,7 @@ function draw(now) {
     revealed = mix(motion.oldReveal, motion.newReveal, t);
     if (t >= 1) {
       motion = null;
+      landedAt = now;
       updateUI();
     }
   }
@@ -153,7 +163,24 @@ function draw(now) {
   const [left, top] = screen([0, 0]);
   ctx.drawImage(map, left, top, data.width * camera[2], data.height * camera[2]);
   if (selected) {
-    if (mode !== "fly") busLine(selected.bus, "#f8faffb0");
+    if (mode !== "fly" && drawnBus) {
+      const actual = mode === "edit" && drag ? drag.ends : drawnBus;
+      busLine(actual, "#60e2ff", false);
+      const snap = mode === "edit" && drag && distance(...actual) * camera[2] >= 22
+        ? nearestRoute(...actual).bus : selected.bus;
+      busLine(snap, "#fff");
+      if (mode === "edit") {
+        actual.forEach((point, index) => {
+          const [x, y] = screen(point);
+          circle(x, y, 13, "#60e2ff", "#141519", 2.5);
+          ctx.font = "850 10px system-ui";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillStyle = "#141519";
+          ctx.fillText(index ? "END" : "IN", x, y);
+        });
+      }
+    }
     const count = mode === "fly" ? revealed : selected.legs.length;
     const paths = selected.legs.slice(0, Math.ceil(count))
       .map((leg, i) => segment(leg.path, Math.min(1, count - i)));
@@ -168,13 +195,13 @@ function draw(now) {
     const ground = selected.chests[active];
     if (!motion && !reducedMotion.matches) {
       const [x, y] = screen(ground);
-      const pulse = (now % 1500) / 1500;
-      circle(x, y, 15 + pulse * 23, "transparent", `rgba(255, 211, 83, ${(1 - pulse) * .65})`);
+      const pulse = mode === "fly" && active > 0 ? Math.min(1, (now - landedAt) / 480) : (now % 1500) / 1500;
+      if (pulse < 1) circle(x, y, 15 + pulse * 23, "transparent", `rgba(255, 211, 83, ${(1 - pulse) * .65})`);
     }
     drawPins(last, active);
     if (mode !== "fly" || active === 0) drawLandingLabel();
   }
-  if (drag) busLine([drag.start, drag.end], "#fff");
+  if (drag && mode === "plan") busLine(drag.ends, "#60e2ff", false);
   if (motion || (selected && !reducedMotion.matches)) requestDraw();
 }
 
@@ -185,21 +212,23 @@ function drawPins(last, active) {
     if (i === active) continue;
     const point = selected.chests[i];
     const overlaps = labeled.some(index => distance(point, selected.chests[index]) * camera[2] < 21);
-    if (overlaps) circle(...screen(point), 3.5, gold, "#141519", 1.5);
+    if (overlaps) circle(...screen(point), 3.5, skipped(point) ? "#8894a1" : gold, "#141519", 1.5);
     else labeled.push(i);
   }
-  labeled.reverse().forEach(index => drawPin(index, index === active));
+  pinTargets = labeled.reverse();
+  pinTargets.forEach(index => drawPin(index, index === active));
 }
 
 function drawPin(index, active) {
   const [x, y] = screen(selected.chests[index]);
   const radius = active || index === 0 ? 12 : 8;
-  circle(x, y, radius, index === 0 ? red : gold, "#141519", 2.5);
+  const empty = skipped(selected.chests[index]);
+  circle(x, y, radius, empty ? "#8894a1" : index === 0 ? red : gold, "#141519", 2.5);
   ctx.font = `850 ${active ? 12 : 10}px system-ui`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = "#17140d";
-  ctx.fillText(index + 1, x, y + .5);
+  ctx.fillText(empty ? "×" : index + 1, x, y + .5);
 }
 
 function drawLandingLabel() {
@@ -257,15 +286,52 @@ function updateUI() {
   } else {
     ui.detail.textContent = ready ? "Drag a line across the island to find your drop." : "Loading map…";
   }
+  if (mode === "edit") {
+    ui.phase.textContent = "BATTLE BUS";
+    ui.title.textContent = "Adjust your bus path";
+    ui.detail.textContent = "Drag either blue handle to update the route.";
+  }
+  const options = selectEnabled();
+  ui.routeTools.hidden = !options || mode === "edit";
+  ui.yield.hidden = !options;
+  ui.notice.hidden = !notice;
+  ui.notice.textContent = notice;
+  ui.reliability.textContent = reliableMode ? "Reliable loot on" : "Reliable loot";
+  ui.reliability.setAttribute("aria-pressed", reliableMode);
+  ui.reliability.disabled = Boolean(motion) || misses.size > 0;
+  ui.chanceRow.hidden = !options || !reliableMode || mode === "edit";
+  ui.chance.disabled = Boolean(motion) || misses.size > 0;
+  ui.chanceValue.value = `${ui.chance.value}%`;
+  if (options) {
+    const stops = selected.chests.filter(point => !skipped(point));
+    const guaranteed = stops.filter(point => loot.isGuaranteed(loot.id(point))).length;
+    const expected = guaranteed + (stops.length - guaranteed) * chance();
+    ui.yield.textContent = `${guaranteed} guaranteed · about ${expected.toFixed(1)} expected chests`;
+    if (displayedRoute !== selected) {
+      ui.jump.replaceChildren(new Option("Select chest", ""), ...selected.chests.map((point, i) =>
+        new Option(`Chest ${i + 1}${skipped(point) ? " · empty" : ""}`, String(i))));
+      displayedRoute = selected;
+    }
+    ui.jump.value = flying ? String(step) : "";
+    ui.jump.disabled = Boolean(motion);
+  }
   ui.progress.hidden = !flying;
   if (planned) ui.fill.style.width = `${(step + 1) / selected.chests.length * 100}%`;
-  ui.next.innerHTML = flying ? "Next chest <span>→</span>" : planned ? "Start flyover <span>→</span>" : "Try a sample bus <span>↗</span>";
+  ui.next.innerHTML = mode === "edit" ? "Done <span>✓</span>" : flying ? "Next chest <span>→</span>"
+    : planned ? "Start flyover <span>→</span>" : "Try a sample bus <span>↗</span>";
   ui.next.disabled = !ready || Boolean(motion) || (flying && step === selected.chests.length - 1);
   ui.back.hidden = !flying;
   ui.back.disabled = step === 0 || Boolean(motion);
   ui.overview.hidden = !flying;
   ui.reset.hidden = !planned;
-  ui.keys.textContent = planned ? "Space / → next  ·  ← back  ·  Esc overview" : "Drag from the bus entrance toward its exit.";
+  ui.edit.hidden = mode !== "overview";
+  ui.edit.disabled = Boolean(motion);
+  ui.skip.hidden = !flying || !options;
+  ui.skip.disabled = !flying || Boolean(motion) || selected.chests.slice(step).some(skipped);
+  ui.busLegend.hidden = mode === "fly" || !drawnBus;
+  ui.keys.textContent = mode === "edit" ? "Move either end. Select Done to preview the route."
+    : flying ? "Space / → next  ·  ← back  ·  X empty  ·  Esc overview"
+    : planned ? "Select a pin to jump to that chest." : "Drag from the bus entrance toward its exit.";
 }
 
 function nearestRoute(a, b) {
@@ -279,15 +345,50 @@ function nearestRoute(a, b) {
     .reduce((best, route) => Math.abs(route.offset - offset) < Math.abs(best.offset - offset) ? route : best);
 }
 
-function selectRoute(route) {
-  selected = route;
-  activate("overview", 0, 770);
+function selectRoute(route, actual, nextMode = "overview") {
+  baseRoute = route;
+  drawnBus = actual;
+  misses.clear();
+  notice = "";
+  selected = reliableMode ? loot.reliable(baseRoute, chance()) : baseRoute;
+  if (nextMode === "edit") {
+    updateUI();
+    requestDraw();
+  } else {
+    activate(nextMode, 0, 770);
+  }
+}
+
+function updateReliability() {
+  if (!baseRoute || !loot || misses.size || motion) return;
+  selected = reliableMode ? loot.reliable(baseRoute, chance()) : baseRoute;
+  if (mode === "overview" || step === 0) activate(mode, 0, 650);
+  else activate("fly", 0, 650);
+}
+
+function jumpTo(index) {
+  if (!selected || motion || mode === "edit" || !Number.isInteger(index) || !selected.chests[index]) return;
+  if (mode !== "fly" || step !== index) activate("fly", index, 900);
+}
+
+function skipChest() {
+  if (ui.skip.hidden || ui.skip.disabled) return;
+  misses.add(loot.id(selected.chests[step]));
+  selected = loot.replan(selected, step, misses, reliableMode ? chance() : 1);
+  notice = step + 1 < selected.chests.length ? "Empty chest marked. Remaining route updated."
+    : "Empty chest marked. No more stops fit the estimated time.";
+  updateUI();
+  requestDraw();
 }
 
 function next() {
   if (!ready || motion) return;
   if (!selected) {
-    selectRoute(data.routes.find(route => route.heading === 300 && route.offset === -240));
+    const sample = data.routes.find(route => route.heading === 300 && route.offset === -240);
+    const [a, b] = sample.bus;
+    selectRoute(sample, [.27, .73].map(t => a.map((x, i) => mix(x, b[i], t))));
+  } else if (mode === "edit") {
+    activate("overview", 0, 730);
   } else if (mode !== "fly") {
     activate("fly", 0, 900);
   } else if (step < selected.chests.length - 1) {
@@ -300,32 +401,42 @@ function back() {
 }
 
 function overview() {
-  if (mode === "fly") activate("overview", 0, 820);
+  if (mode === "fly" || mode === "edit") activate("overview", 0, 820);
 }
 
 function reset() {
-  selected = null;
+  selected = baseRoute = drawnBus = null;
+  misses.clear();
+  notice = "";
   activate("plan", 0, 650);
 }
 
 canvas.addEventListener("pointerdown", event => {
-  if (!ready || mode !== "plan" || motion || drag || event.button !== 0) return;
+  if (!ready || motion || drag || event.button !== 0) return;
   const point = mapPoint(event);
+  const near = (target, radius) => distance(point, target) * camera[2] < radius;
+  if (mode === "overview" || mode === "fly") {
+    const pin = pinTargets.slice().reverse().find(i => near(selected.chests[i], 13));
+    if (pin !== undefined) jumpTo(pin);
+    return;
+  }
+  const handle = mode === "edit" ? drawnBus.findIndex(end => near(end, 26)) : 1;
+  if (handle < 0) return;
   canvas.setPointerCapture(event.pointerId);
-  drag = { id: event.pointerId, start: point, end: point };
+  drag = { id: event.pointerId, handle, ends: mode === "edit" ? drawnBus.slice() : [point, point] };
   requestDraw();
 });
 canvas.addEventListener("pointermove", event => {
   if (drag?.id !== event.pointerId) return;
-  drag.end = mapPoint(event);
+  drag.ends[drag.handle] = mapPoint(event);
   requestDraw();
 });
 canvas.addEventListener("pointerup", event => {
   if (drag?.id !== event.pointerId) return;
-  const { start } = drag;
-  const end = mapPoint(event);
+  drag.ends[drag.handle] = mapPoint(event);
+  const ends = drag.ends;
   drag = null;
-  if (distance(start, end) * camera[2] >= 22) selectRoute(nearestRoute(start, end));
+  if (distance(...ends) * camera[2] >= 22) selectRoute(nearestRoute(...ends), ends, mode === "edit" ? "edit" : "overview");
   requestDraw();
 });
 canvas.addEventListener("lostpointercapture", () => { drag = null; requestDraw(); });
@@ -334,11 +445,17 @@ ui.next.onclick = next;
 ui.back.onclick = back;
 ui.overview.onclick = overview;
 ui.reset.onclick = reset;
+ui.edit.onclick = () => activate("edit", 0, 730);
+ui.skip.onclick = skipChest;
+ui.jump.onchange = () => { if (ui.jump.value !== "") jumpTo(Number(ui.jump.value)); };
+ui.reliability.onclick = () => { reliableMode = !reliableMode; updateReliability(); };
+ui.chance.oninput = () => { ui.chanceValue.value = `${ui.chance.value}%`; };
+ui.chance.onchange = updateReliability;
 
 window.addEventListener("keydown", event => {
-  if (event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
+  if (event.repeat || event.altKey || event.ctrlKey || event.metaKey || event.target.matches?.("input, select")) return;
   if (event.code === "Space" && event.target instanceof HTMLButtonElement) return;
-  const action = { Space: next, ArrowRight: next, ArrowLeft: back, Escape: overview }[event.code];
+  const action = { Space: next, ArrowRight: next, ArrowLeft: back, Escape: overview, KeyX: skipChest }[event.code];
   if (action) {
     event.preventDefault();
     action();

@@ -55,3 +55,20 @@ button:focus-visible { outline: 2px solid white; outline-offset: 2px; }
   .north { top: 72px; right: 16px; }
   .hud { left: 12px; bottom: 12px; width: calc(100% - 24px); padding: 13px 12px 10px; }
 }
+
+#yield { color: var(--gold); }
+#notice { color: var(--white); }
+.jump { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+select {
+  min-height: 38px; border: 1px solid #ffffff30; border-radius: 5px;
+  background: #182230; color: var(--white); padding: 0 6px; font: inherit;
+}
+#reliability[aria-pressed="true"] { color: var(--gold); border-color: var(--gold); }
+.chance {
+  display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 3px 6px;
+  margin-top: 8px; color: var(--muted); font-size: 12px;
+}
+.chance input { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--gold); }
+.bus-legend { display: flex; gap: 13px; }
+.bus-legend span::before { display: inline-block; content: ""; width: 13px; height: 3px; margin: 0 5px 2px 0; background: #60e2ff; }
+.bus-legend span + span::before { background: repeating-linear-gradient(90deg, #fff 0 4px, transparent 4px 7px); }

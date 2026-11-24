@@ -7,6 +7,8 @@
   <title>Drop Planner · Crossbones Isle</title>
   <link rel="stylesheet" href="style.css">
   <script defer src="data.js"></script>
+  <script defer src="network.js"></script>
+  <script defer src="solver.js"></script>
   <script defer src="planner.js"></script>
 </head>
 <body>
@@ -24,13 +26,26 @@
       <p class="eyebrow" id="phase">BATTLE BUS</p>
       <h2 id="title">Draw your bus path</h2>
       <p id="detail" aria-live="polite">Loading map…</p>
+      <p id="yield" class="keys" hidden></p>
+      <p id="notice" class="keys" role="status" hidden></p>
       <div class="progress" id="progress" hidden><div id="fill"></div></div>
       <div class="controls">
         <button id="back" hidden aria-label="Previous chest">←</button>
         <button id="next" class="primary" disabled>Try a sample bus <span>↗</span></button>
         <button id="overview" hidden>Overview</button>
+        <button id="skip" hidden>Empty chest</button>
+        <button id="edit" hidden>Edit bus</button>
         <button id="reset" hidden>New bus</button>
       </div>
+      <div class="controls" id="routeTools" hidden>
+        <label class="jump">Jump to <select id="jump" aria-label="Jump to chest"></select></label>
+        <button id="reliability" aria-pressed="false">Reliable loot</button>
+      </div>
+      <label class="chance" id="chanceRow" hidden>
+        Random spawn estimate <output id="chanceValue">55%</output>
+        <input id="chance" type="range" min="0" max="100" step="5" value="55">
+      </label>
+      <p class="bus-legend keys" id="busLegend" hidden><span>Drawn</span><span>Snapped</span></p>
       <p id="keys" class="keys">Drag from the bus entrance toward its exit.</p>
     </section>
     <div class="north" aria-hidden="true"><span>N</span><span>▲</span></div>
