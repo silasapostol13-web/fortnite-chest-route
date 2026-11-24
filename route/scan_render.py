@@ -102,7 +102,8 @@ class ScanScene(Scene):
                 rf = fr if rank == 1 else self.f_small
                 fill = (col if rank == 1 else WHITE) + (int(255 * appear),)
                 d.text((60 * s, y), f"{rank}   {area.upper()}", font=rf, fill=fill)
-                cs = f"{cnt}"
+                tie = rank > 1 and cnt == self.top5[0][2]
+                cs = f"{cnt} (TIE)" if tie else f"{cnt}"
                 d.text((self.W - 60 * s - d.textlength(cs, font=rf), y), cs, font=rf, fill=fill)
         return Image.alpha_composite(img, top).convert("RGB")
 
@@ -119,7 +120,7 @@ class ScanScene(Scene):
             y0 = self.H * 0.76
             d.rounded_rectangle((40 * s, y0, self.W - 40 * s, y0 + 250 * s), radius=int(28 * s),
                                 fill=BG + (int(235 * a),))
-            d.text((80 * s, y0 + 30 * s), "AVERAGE DROP", font=self.f_mid, fill=(180, 190, 205, int(255 * a)))
+            d.text((80 * s, y0 + 30 * s), "AVERAGE LANDING SPOT", font=self.f_mid, fill=(180, 190, 205, int(255 * a)))
             d.text((self.W - 80 * s - d.textlength(f"{self.avg:.0f}", font=self.f_mid), y0 + 30 * s),
                    f"{self.avg:.0f}", font=self.f_mid, fill=(180, 190, 205, int(255 * a)))
             n = len(self.route)

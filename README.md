@@ -124,7 +124,7 @@ which puts the token at about 1 in 6,600 games. The route raises your odds; it d
 **How sure** (`python -m route.scan --robust`): I re-scored with travel 20% faster or slower (which
 covers the map-scale guess and the missing building slowdown) and with 1.5, 2 or 3 s per chest.
 **Fortunes Fort was never beaten in any of the 9 cases.** Rubber Resort tied it in 5 and fell behind
-in 4 (with 3 s per chest, The Rocky ties instead). Honest claim: Fortunes Fort is the best spot or
+in 4; with 3 s per chest, The Rocky ties it in 2 of 3 cases. Honest claim: Fortunes Fort is the best spot or
 tied for it under every guess we tested. Rubber Resort is a strong second choice when the Fort is contested.
 
 **Calibration:** after he plays the route, put his times in a CSV (`chest,real_time`, with chest
