@@ -3,3 +3,7 @@ __pycache__/
 .DS_Store
 out/
 chest_route.html
+.venv/
+data/*.webp
+data/cache/
+out/
