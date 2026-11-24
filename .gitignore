@@ -7,3 +7,5 @@ chest_route.html
 data/*.webp
 data/cache/
 out/
+
+/planner/map.webp
