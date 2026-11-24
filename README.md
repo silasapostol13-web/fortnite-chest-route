@@ -187,6 +187,8 @@ or movement model:
 .venv/bin/python scripts/export_planner_network.py
 ```
 
-**Quiet drop** favors landing farther from the drawn bus line while keeping
-at least 85% of the top modeled loot score among reachable candidates.
-It can be combined with Reliable Loot. Distance is a proxy for competition.
+Set **Drop style** before drawing a bus path or using the sample bus.
+**Standard** uses the normal loot objective. **Quiet Drop** favors landings
+farther from the drawn bus line and **Hot Drop** favors nearer landings.
+Both keep at least 85% of the top modeled loot score among reachable candidates
+and can be combined with Reliable Loot. Distance is a proxy for competition.

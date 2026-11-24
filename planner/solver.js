@@ -123,7 +123,7 @@ const loot = (() => {
     return Math.abs(px * dy - py * dx) * meter / Math.hypot(dx, dy);
   }
 
-  function planFrom(base, chance, quietBus) {
+  function planFrom(base, chance, drawnBus, style = "quiet") {
     // Include the original recommendation as a candidate, so the weighted
     // heuristic cannot lower expected yield for the selected bus.
     const original = base.chests.map(id);
@@ -140,7 +140,7 @@ const loot = (() => {
       candidate.route.unshift(i);
       candidate.reward += isGuaranteed(i) ? 1 : chance;
       candidate.seconds += stop;
-      if (quietBus) candidates.push(candidate);
+      if (drawnBus) candidates.push(candidate);
       if (better(candidate, best)) best = candidate;
     }
     for (const floor of [0, 4, 9]) {
@@ -152,18 +152,19 @@ const loot = (() => {
       if (better(candidate, best)) best = candidate;
     }
     best = polish(best, budget(base.bus, best.route[0]), chance);
-    if (quietBus) {
+    if (drawnBus) {
       // Keep good loot routes, favoring distance within the modeled glide range.
       const reachable = [...candidates, best].filter(candidate =>
-        offBus(quietBus, candidate.route[0]) <= network.reach);
+        offBus(drawnBus, candidate.route[0]) <= network.reach);
       const floor = Math.max(...reachable.map(candidate => candidate.reward)) * .85;
       const choices = reachable.filter(candidate => candidate.reward + 1e-8 >= floor);
-      const quiet = choices.reduce((far, candidate) => {
-        if (!far) return candidate;
-        const delta = offBus(quietBus, candidate.route[0]) - offBus(quietBus, far.route[0]);
-        return delta > .01 || (Math.abs(delta) <= .01 && better(candidate, far)) ? candidate : far;
+      const direction = style === "hot" ? -1 : 1;
+      const preferred = choices.reduce((current, candidate) => {
+        if (!current) return candidate;
+        const delta = direction * (offBus(drawnBus, candidate.route[0]) - offBus(drawnBus, current.route[0]));
+        return delta > .01 || (Math.abs(delta) <= .01 && better(candidate, current)) ? candidate : current;
       }, null);
-      if (quiet) best = polish(quiet, budget(base.bus, quiet.route[0]), chance);
+      if (preferred) best = polish(preferred, budget(base.bus, preferred.route[0]), chance);
     }
     if (best.route.length === original.length && best.route.every((i, index) => i === original[index])) return base;
     return {

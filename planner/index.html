@@ -38,10 +38,18 @@
         <button id="edit" hidden>Edit bus</button>
         <button id="reset" hidden>New bus</button>
       </div>
+      <div class="controls" id="styleTools">
+        <label class="jump">Drop style
+          <select id="dropStyle">
+            <option value="standard">Standard</option>
+            <option value="quiet">Quiet Drop</option>
+            <option value="hot">Hot Drop</option>
+          </select>
+        </label>
+      </div>
       <div class="controls" id="routeTools" hidden>
         <label class="jump">Jump to <select id="jump" aria-label="Jump to chest"></select></label>
         <button id="reliability" aria-pressed="false">Reliable loot</button>
-        <button id="quiet" aria-pressed="false" title="Favor distance from the bus while keeping at least 85% of the top modeled loot score">Quiet drop</button>
       </div>
       <label class="chance" id="chanceRow" hidden>
         Random spawn estimate <output id="chanceValue">55%</output>

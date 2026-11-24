@@ -12,7 +12,6 @@ const gold = "#ffd453";
 const red = "#ff4e65";
 let size, camera, motion, selected, drag, drawnBus, baseRoute;
 let reliableMode = false;
-let quietMode = false;
 let notice = "";
 let landedAt = 0;
 let displayedRoute;
@@ -300,10 +299,11 @@ function updateUI() {
   ui.reliability.textContent = reliableMode ? "Reliable loot on" : "Reliable loot";
   ui.reliability.setAttribute("aria-pressed", reliableMode);
   ui.reliability.disabled = Boolean(motion) || misses.size > 0;
-  ui.quiet.setAttribute("aria-pressed", quietMode);
-  ui.quiet.disabled = ui.reliability.disabled;
-  ui.glide.hidden = !options || !quietMode;
-  if (options && quietMode) {
+  const customDrop = ui.dropStyle.value !== "standard";
+  ui.styleTools.hidden = mode === "fly" || !loot;
+  ui.dropStyle.disabled = Boolean(motion) || misses.size > 0;
+  ui.glide.hidden = !options || !customDrop;
+  if (options && customDrop) {
     const meters = Math.round(loot.offBus(drawnBus, loot.id(selected.chests[0])) / 10) * 10;
     ui.glide.textContent = `About ${meters} m from your bus line`;
   }
@@ -353,12 +353,18 @@ function nearestRoute(a, b) {
     .reduce((best, route) => Math.abs(route.offset - offset) < Math.abs(best.offset - offset) ? route : best);
 }
 
+function routeForStyle() {
+  const style = ui.dropStyle.value;
+  if (!reliableMode && style === "standard") return baseRoute;
+  return loot.planFrom(baseRoute, reliableMode ? chance() : 1, style === "standard" ? null : drawnBus, style);
+}
+
 function selectRoute(route, actual, nextMode = "overview") {
   baseRoute = route;
   drawnBus = actual;
   misses.clear();
   notice = "";
-  selected = (reliableMode || quietMode) ? loot.planFrom(baseRoute, reliableMode ? chance() : 1, quietMode ? drawnBus : null) : baseRoute;
+  selected = routeForStyle();
   if (nextMode === "edit") {
     updateUI();
     requestDraw();
@@ -369,7 +375,7 @@ function selectRoute(route, actual, nextMode = "overview") {
 
 function updateReliability() {
   if (!baseRoute || !loot || misses.size || motion) return;
-  selected = (reliableMode || quietMode) ? loot.planFrom(baseRoute, reliableMode ? chance() : 1, quietMode ? drawnBus : null) : baseRoute;
+  selected = routeForStyle();
   if (mode === "overview" || step === 0) activate(mode, 0, 650);
   else activate("fly", 0, 650);
 }
@@ -457,7 +463,7 @@ ui.edit.onclick = () => activate("edit", 0, 730);
 ui.skip.onclick = skipChest;
 ui.jump.onchange = () => { if (ui.jump.value !== "") jumpTo(Number(ui.jump.value)); };
 ui.reliability.onclick = () => { reliableMode = !reliableMode; updateReliability(); };
-ui.quiet.onclick = () => { quietMode = !quietMode; updateReliability(); };
+ui.dropStyle.onchange = updateReliability;
 ui.chance.oninput = () => { ui.chanceValue.value = `${ui.chance.value}%`; };
 ui.chance.onchange = updateReliability;
 
