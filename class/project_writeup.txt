@@ -1,0 +1,85 @@
+Project 2 — Network Graph Analyzer
+
+Graph design
+
+I modeled eight reported Fortnite chest spawn locations on Crossbones Isle. Each chest location is a node. I chose nine connections between nearby chests to create a sample with branches and cycles. The connections are two-way, and each edge's weight is the straight-line distance between its two chests, measured in map pixels.
+
+I stored the graph as an adjacency list using a Python dictionary. Each chest ID is a key, and its value is a list of neighboring chest IDs and their distances. If chest A connects to chest B at a distance of 5, A's list stores (B, 5) and B's list stores (A, 5). A chest with no connections has an empty list.
+
+How the searches work
+
+BFS explores level by level, like moving through a tree one level at a time. It uses a queue to visit the starting chest, then the chests one connection away, then the chests two connections away. It marks each chest when it goes into the queue so it only gets queued once.
+
+DFS follows one branch as far as it can, then goes back to explore another branch. I used a stack so the most recently added chest comes out first. The visited set keeps a chest from appearing twice in the result, even if it was put on the stack more than once.
+
+Dijkstra finds the route with the lowest total distance. It uses a priority queue to process the chest with the smallest known distance from the start. If it finds a shorter way to a neighbor, it updates the distance and records which chest led there. Once it reaches the destination, it follows those records backward and reverses the list to get the route.
+
+Time complexity
+
+Let V be the number of chests and E be the number of connections. Adding a node and looking up its neighbor list take O(1) time on average. Adding an edge takes O(1) amortized time because the program appends to two neighbor lists. Reading a chest's entire neighbor list takes time proportional to its number of neighbors. BFS and DFS each take O(V + E) time because they process reachable nodes and scan their connections. Dijkstra takes O((V + E) log(V + E)) time with this heap implementation, which can hold multiple distance entries for the same chest.
+
+Example output
+
+Connections (map pixels)
+  C305: C264 (2.74), C256 (11.28)
+  C264: C305 (2.74), C265 (0.87)
+  C265: C264 (0.87), C261 (0.87)
+  C261: C265 (0.87), C266 (4.66), C257 (8.57)
+  C266: C261 (4.66), C257 (7.98)
+  C257: C261 (8.57), C266 (7.98), C250 (5.47)
+  C250: C257 (5.47), C256 (6.59)
+  C256: C305 (11.28), C250 (6.59)
+
+BFS from C305: C305 → C264 → C256 → C265 → C250 → C261 → C257 → C266
+DFS from C305: C305 → C264 → C265 → C261 → C266 → C257 → C250 → C256
+
+Shortest path: C305 → C264 → C265 → C261 → C257
+Total distance: 13.04 map pixels
+
+Testing evidence
+
+For the weighted path test, A → C → B → D costs 2 + 2 + 3 = 7. The route A → B → D costs 8 + 3 = 11.
+
+Fortnite BFS order
+  Expected: ['C305', 'C264', 'C256', 'C265', 'C250', 'C261', 'C257', 'C266']
+  Actual:   ['C305', 'C264', 'C256', 'C265', 'C250', 'C261', 'C257', 'C266']
+  PASS
+
+Fortnite DFS order
+  Expected: ['C305', 'C264', 'C265', 'C261', 'C266', 'C257', 'C250', 'C256']
+  Actual:   ['C305', 'C264', 'C265', 'C261', 'C266', 'C257', 'C250', 'C256']
+  PASS
+
+E has no neighbors
+  Expected: []
+  Actual:   []
+  PASS
+
+Dijkstra cannot reach E from A
+  Expected: ([], inf)
+  Actual:   ([], inf)
+  PASS
+
+BFS on a cyclic graph
+  Expected: ['A', 'B', 'C', 'D']
+  Actual:   ['A', 'B', 'C', 'D']
+  PASS
+
+DFS on a cyclic graph
+  Expected: ['A', 'B', 'D', 'C']
+  Actual:   ['A', 'B', 'D', 'C']
+  PASS
+
+Dijkstra shortest path from A to D
+  Expected: (['A', 'C', 'B', 'D'], 7)
+  Actual:   (['A', 'C', 'B', 'D'], 7)
+  PASS
+
+All seven checks in test_graph.py passed.
+
+Data source and AI assistance
+
+The chest spawn coordinates came from the Crossbones Isle dataset published by Pirate Shop Planner.
+https://fortnitepirateshoptoken.org/fortnite-chest-map/
+
+I used AI to set up the Fortnite data and project files and to fill in gaps when I got stuck. I worked through the graph operations, BFS, and DFS with AI tutoring. AI also provided reference code for Dijkstra, the sample graph, and the demo output, helped debug my code, and helped me identify edge cases to test, such as an unreachable chest and repeat visits in a cycle, and verify the results.
