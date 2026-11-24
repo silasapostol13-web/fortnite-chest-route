@@ -27,6 +27,7 @@
       <h2 id="title">Draw your bus path</h2>
       <p id="detail" aria-live="polite">Loading map…</p>
       <p id="yield" class="keys" hidden></p>
+      <p id="glide" class="keys" hidden></p>
       <p id="notice" class="keys" role="status" hidden></p>
       <div class="progress" id="progress" hidden><div id="fill"></div></div>
       <div class="controls">
@@ -40,6 +41,7 @@
       <div class="controls" id="routeTools" hidden>
         <label class="jump">Jump to <select id="jump" aria-label="Jump to chest"></select></label>
         <button id="reliability" aria-pressed="false">Reliable loot</button>
+        <button id="quiet" aria-pressed="false" title="Favor distance from the bus while keeping at least 85% of the top modeled loot score">Quiet drop</button>
       </div>
       <label class="chance" id="chanceRow" hidden>
         Random spawn estimate <output id="chanceValue">55%</output>

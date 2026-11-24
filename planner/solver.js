@@ -116,7 +116,14 @@ const loot = (() => {
     return best;
   }
 
-  function reliable(base, chance) {
+  function offBus(bus, i) {
+    const [[x, y], [ex, ey]] = bus;
+    const dx = ex - x, dy = ey - y;
+    const [px, py] = [stops[i][0] - x, stops[i][1] - y];
+    return Math.abs(px * dy - py * dx) * meter / Math.hypot(dx, dy);
+  }
+
+  function planFrom(base, chance, quietBus) {
     // Include the original recommendation as a candidate, so the weighted
     // heuristic cannot lower expected yield for the selected bus.
     const original = base.chests.map(id);
@@ -125,6 +132,7 @@ const loot = (() => {
       seconds: base.seconds,
       reward: original.reduce((total, i) => total + (isGuaranteed(i) ? 1 : chance), 0),
     };
+    const candidates = [best];
     for (let i = 0; i < count; i++) {
       const available = budget(base.bus, i) - stop;
       if (available < 0) continue;
@@ -132,6 +140,7 @@ const loot = (() => {
       candidate.route.unshift(i);
       candidate.reward += isGuaranteed(i) ? 1 : chance;
       candidate.seconds += stop;
+      if (quietBus) candidates.push(candidate);
       if (better(candidate, best)) best = candidate;
     }
     for (const floor of [0, 4, 9]) {
@@ -143,6 +152,19 @@ const loot = (() => {
       if (better(candidate, best)) best = candidate;
     }
     best = polish(best, budget(base.bus, best.route[0]), chance);
+    if (quietBus) {
+      // Keep good loot routes, favoring distance within the modeled glide range.
+      const reachable = [...candidates, best].filter(candidate =>
+        offBus(quietBus, candidate.route[0]) <= network.reach);
+      const floor = Math.max(...reachable.map(candidate => candidate.reward)) * .85;
+      const choices = reachable.filter(candidate => candidate.reward + 1e-8 >= floor);
+      const quiet = choices.reduce((far, candidate) => {
+        if (!far) return candidate;
+        const delta = offBus(quietBus, candidate.route[0]) - offBus(quietBus, far.route[0]);
+        return delta > .01 || (Math.abs(delta) <= .01 && better(candidate, far)) ? candidate : far;
+      }, null);
+      if (quiet) best = polish(quiet, budget(base.bus, quiet.route[0]), chance);
+    }
     if (best.route.length === original.length && best.route.every((i, index) => i === original[index])) return base;
     return {
       ...base,
@@ -252,5 +274,5 @@ const loot = (() => {
     return { path, meters: Math.round(meters), seconds: travelTime(a, b) };
   }
 
-  return { reliable, replan, id, isGuaranteed };
+  return { planFrom, offBus, replan, id, isGuaranteed };
 })();

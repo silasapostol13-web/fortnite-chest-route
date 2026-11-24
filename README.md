@@ -186,3 +186,7 @@ or movement model:
 ```bash
 .venv/bin/python scripts/export_planner_network.py
 ```
+
+**Quiet drop** favors landing farther from the drawn bus line while keeping
+at least 85% of the top modeled loot score among reachable candidates.
+It can be combined with Reliable Loot. Distance is a proxy for competition.
