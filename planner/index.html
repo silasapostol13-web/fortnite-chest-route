@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1119">
+  <title>Drop Planner · Crossbones Isle</title>
+  <link rel="stylesheet" href="style.css">
+  <script defer src="data.js"></script>
+  <script defer src="planner.js"></script>
+</head>
+<body>
+  <main>
+    <canvas id="map" aria-label="Crossbones Isle map. Drag to draw your Battle Bus route."></canvas>
+    <div class="shade" aria-hidden="true"></div>
+    <header>
+      <div>
+        <div class="eyebrow"><i></i> PIRATE TOKEN HUNT</div>
+        <h1>DROP PLANNER</h1>
+      </div>
+      <div class="version"><b>Crossbones Isle</b><span id="version"></span></div>
+    </header>
+    <section class="hud" aria-label="Route information">
+      <p class="eyebrow" id="phase">BATTLE BUS</p>
+      <h2 id="title">Draw your bus path</h2>
+      <p id="detail" aria-live="polite">Loading map…</p>
+      <div class="progress" id="progress" hidden><div id="fill"></div></div>
+      <div class="controls">
+        <button id="back" hidden aria-label="Previous chest">←</button>
+        <button id="next" class="primary" disabled>Try a sample bus <span>↗</span></button>
+        <button id="overview" hidden>Overview</button>
+        <button id="reset" hidden>New bus</button>
+      </div>
+      <p id="keys" class="keys">Drag from the bus entrance toward its exit.</p>
+    </section>
+    <div class="north" aria-hidden="true"><span>N</span><span>▲</span></div>
+  </main>
+</body>
+</html>
