@@ -162,16 +162,17 @@ class Scene:
                 d.ellipse((px - dot_r, py - dot_r, px + dot_r, py + dot_r), fill=(255, 255, 255, 90))
 
         # bus line
-        (bx0, by0), (bx1, by1) = self.bus
-        a = ease((vt - T_BUS) / (T_PIN - T_BUS))
-        bus_alpha = int(255 * (1 - ease((vt - T_ROUTE) / 1.0)))
-        if bus_alpha > 0:
-            ex, ey = bx0 + (bx1 - bx0) * a, by0 + (by1 - by0) * a
-            p0, p1 = sc(bx0, by0), sc(ex, ey)
-            d.line([p0, p1], fill=BUS + (bus_alpha,), width=int(7 * s))
-            d.ellipse((p1[0] - 14 * s, p1[1] - 14 * s, p1[0] + 14 * s, p1[1] + 14 * s), fill=BUS + (bus_alpha,))
-            if a > 0.15:
-                d.text((p1[0] + 22 * s, p1[1] - 20 * s), "BUS", font=self.f_small, fill=BUS + (bus_alpha,))
+        if self.bus:
+            (bx0, by0), (bx1, by1) = self.bus
+            a = ease((vt - T_BUS) / (T_PIN - T_BUS))
+            bus_alpha = int(255 * (1 - ease((vt - T_ROUTE) / 1.0)))
+            if bus_alpha > 0:
+                ex, ey = bx0 + (bx1 - bx0) * a, by0 + (by1 - by0) * a
+                p0, p1 = sc(bx0, by0), sc(ex, ey)
+                d.line([p0, p1], fill=BUS + (bus_alpha,), width=int(7 * s))
+                d.ellipse((p1[0] - 14 * s, p1[1] - 14 * s, p1[0] + 14 * s, p1[1] + 14 * s), fill=BUS + (bus_alpha,))
+                if a > 0.15:
+                    d.text((p1[0] + 22 * s, p1[1] - 20 * s), "BUS", font=self.f_small, fill=BUS + (bus_alpha,))
 
         # route progress in game time
         gt = self.total * min(1.0, (vt - T_ROUTE) / (T_END - T_ROUTE)) if vt >= T_ROUTE else 0.0

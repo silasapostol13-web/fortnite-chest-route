@@ -175,3 +175,24 @@ def test_heuristic_matches_exact_on_real_map_clusters(start):
     ex, _ = exact_best(T, start, cluster, 60)
     h, _ = ils_best(T, start, cluster, 60, iters=300)
     assert len(h) == len(ex)
+
+
+# --- calibration and route card ---------------------------------------------------
+
+def test_calibration_recovers_speed_and_stop_time():
+    from route.scan import fit_calibration
+    # true world: travel takes 1.3x the model, each chest stop takes 2.6 s
+    rows = [(w, n, 1.3 * w + 2.6 * n) for w, n in [(0, 1), (4.1, 2), (9.7, 4), (20.2, 7), (35.0, 12), (61.3, 20)]]
+    k, c = fit_calibration(rows)
+    assert k == pytest.approx(1.3) and c == pytest.approx(2.6)
+
+
+def test_card_splits_match_route_time_and_compass():
+    from route.card import build_steps, compass
+    T = line_matrix([0, 10, 25])
+    xy = np.array([[0, 0], [10, 0], [10, 15]], dtype=float)
+    steps = build_steps([0, 1, 2], T, xy)
+    assert steps[-1]["split_s"] == pytest.approx(route_time(T, [0, 1, 2]))
+    assert steps[-1]["walk_s_cum"] == pytest.approx(25)
+    assert compass((0, 0), (10, 0)) == "E" and compass((0, 0), (0, -5)) == "N"
+    assert compass((0, 0), (-3, 3)) == "SW"

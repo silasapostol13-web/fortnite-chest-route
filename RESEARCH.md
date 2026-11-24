@@ -66,3 +66,21 @@ already mapping "fastest chest routes" to farm it
 ([GamesRadar](https://www.gamesradar.com/games/fortnite/fortnite-players-desperate-for-free-skins-have-mapped-out-the-fastest-routes-to-grind-for-the-pirate-shop-token-because-yes-it-really-is-that-serious/)).
 That's the viewer's reason to care. The token odds aren't published (one estimate: 1 in 700,000), so
 the video shouldn't promise a token.
+
+## Pass 2 additions
+
+- **Token odds:** Epic confirmed **1 in 137,500 per chest** on Nov 7, 2026, boosted ~1.5x in Saturday
+  Treasure Hours ([VGC](https://www.videogameschronicle.com/news/fortnite-officially-confirms-pirate-shop-access-token-drop-rate-as-players-hunt-for-item-which-makes-entire-shop-free/),
+  [Kotaku](https://kotaku.com/fortnite-bullied-into-divulging-the-drop-rate-of-the-pirate-shop-token-2000755124),
+  [playnews](https://www.playnews.gg/en/news/fortnite-pirate-shop-access-odds-1-in-137-500-per-chest-2x-in-treasure-hours)).
+  No chest count, no time limit; teammates share it in squads. Sources disagree on whether every chest
+  type counts. None limit it to special chests, and one says breaking a chest counts too.
+- **Map scale, still unsettled:** the only measurements found are an older map's 250 m grid squares
+  ([Game Rant](https://gamerant.com/fortnite-map-diagram-distance/)) and a 1,836 m run across a
+  2026 map in 5:39 ([pulse.bot](https://www.pulse.bot/gaming/news/for-science-i-raced-across-1836-metres-in-fortnite-at-half-of-usain-bolts-top-speed-885d064a-88cd-423b-9356-974ae7211add/)).
+  It isn't clear whether that run spanned the island or the full map square. Crossbones Isle is built for
+  80 players instead of 100, so it's about √0.8 ≈ 0.9x as wide, which gives 1.35-1.8 m/px. 1.7 sits in
+  that range. Because scale only multiplies every travel time, the robustness check (±20%) covers it,
+  and his real splits will pin it down (`--calibrate`).
+- **Buildings and cliffs:** not modelled separately. The calibration's travel factor absorbs the average
+  slowdown. A proper per-cell slowdown would need building outlines the map image doesn't separate cleanly.
