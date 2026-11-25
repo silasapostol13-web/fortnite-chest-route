@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pirate Token Hunt · Steering Replay</title>
+<style>
+:root {color-scheme:dark;--gold:#ffd345;--ink:#16120c;--cream:#fff5d5}
+* {box-sizing:border-box}
+body {margin:0;background:#0d0d10;color:var(--cream);font:15px system-ui,sans-serif}
+main {max-width:1120px;margin:auto;padding:20px}
+h1 {font-size:clamp(22px,4vw,34px);margin:0 0 10px}
+.stage {position:relative;aspect-ratio:16/9;overflow:hidden;background:#000;border:1px solid #655434}
+video {display:block;width:100%;height:100%}
+.hud {position:absolute;top:14%;left:50%;transform:translateX(-50%);pointer-events:none;
+ display:flex;align-items:center;gap:12px;min-width: min(238px, 80%);padding:10px 14px;
+ background:#251a0fee;border-top:2px solid var(--gold);box-shadow:0 5px 20px #0008}
+.dial {display:grid;place-items:center;border:1px solid #ab8838;border-radius:50%;width:48px;height:48px;flex:none}
+.arrow {width:30px;height:30px;background:var(--gold);clip-path:polygon(50% 0, 96% 91%, 50% 70%, 4% 91%)}
+.near .arrow {width:10px;height:10px;border-radius:50%;clip-path:none}
+.lost .arrow {visibility:hidden}
+#status {font-size:12px;color:#f0ddac}
+#target {font-size:20px;font-weight:800}
+small {display:block;color:var(--gold);font-weight:800;letter-spacing:.13em;font-size:9px}
+.controls {display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px}
+button,select {font:inherit;color:var(--cream);background:#2b2115;border:1px solid #6e5630;border-radius:4px;padding:8px 10px;cursor:pointer}
+button:first-of-type {background:var(--gold);color:#171207;border-color:var(--gold);font-weight:700}
+button:disabled {opacity:.45;cursor:default}
+#telemetry, #history {margin:8px 0;color:#cbc1a8;font-size:13px;font-variant-numeric:tabular-nums}
+</style>
+<main>
+<h1>Pirate Token Hunt <span style="color:#a89a78">· Steering Replay</span></h1>
+<div class="stage">
+  <video id="video" src="gameplay.mp4" controls playsinline preload="auto"></video>
+  <div class="hud lost" id="hud">
+    <div class="dial"><div class="arrow" id="arrow"></div></div>
+    <div><small>CHEST STEERING</small><div id="target">Chest 19</div><div id="status">Tracking lost</div></div>
+  </div>
+</div>
+<div class="controls">
+  <label>Waypoint <select id="waypoint"></select></label>
+  <button id="found">Found</button>
+  <button id="missing">Missing</button>
+  <button id="reset">Reset marks</button>
+</div>
+<p id="telemetry">Recorded playback · position and heading estimates</p>
+<p id="history" role="status">No chest marks yet.</p>
+</main>
+<script src="telemetry.js"></script>
+<script>
+"use strict";
+const data = window.STEERING_DATA;
+const ui = Object.fromEntries([...document.querySelectorAll("[id]")].map(item => [item.id, item]));
+const wrap = a => ((a + 180) % 360 + 360) % 360 - 180;
+const marks = new Map();
+let current = 18;
+data.waypoints.forEach((_, i) => ui.waypoint.add(new Option(`Chest ${i + 1}`, i)));
+ui.waypoint.value = current;
+
+function sample(rows, t, maxGap, angular = false) {
+  let lo = 0, hi = rows.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (rows[mid][0] < t) lo = mid + 1; else hi = mid;
+  }
+  const a = rows[lo - 1], b = rows[lo];
+  if (!a || !b) {
+    const row = a ?? b;
+    return Math.abs(row[0] - t) < .20 ? row.slice(1) : null;
+  }
+  if (t === b[0]) return b.slice(1);
+  const gap = b[0] - a[0];
+  if (gap > maxGap) return null;
+  const p = (t - a[0]) / gap;
+  return angular ? [(a[1] + p * wrap(b[1] - a[1]) + 360) % 360] : a.slice(1).map((v, i) => v + p * (b[i + 1] - v));
+}
+
+function draw(t) {
+  const position = sample(data.positions, t, .76);
+  const yaw = sample(data.headings, t, .35, true);
+  ui.target.textContent = current < 0 ? "Route complete" : `Chest ${current + 1}`;
+  ui.hud.className = "hud lost";
+  ui.status.textContent = current < 0 ? "All selected stops marked" : "Tracking lost";
+  ui.telemetry.textContent = `Source time ${(data.sourceStart + t).toFixed(2)} s`;
+  if (!position || !yaw || current < 0) return;
+  const target = data.waypoints[current];
+  const dx = target[0] - position[0], dy = target[1] - position[1];
+  const bearing = (Math.atan2(dx, -dy) * 180 / Math.PI + 360) % 360;
+  const turn = wrap(bearing - yaw[0]);
+  const distance = Math.hypot(dx, dy) * 1.7;
+  const direction = Math.abs(turn) < 12 ? "Ahead" : turn > 0 ? "Right" : "Left";
+  ui.arrow.style.transform = `rotate(${turn}deg)`;
+  ui.hud.className = distance <= 5 ? "hud near" : "hud";
+  ui.status.textContent = distance <= 5 ? "Search area" : `${direction} · ~${Math.round(distance)} m`;
+  ui.telemetry.textContent += ` · Heading ${Math.round(yaw[0]) % 360}° · Bearing ${Math.round(bearing) % 360}° · Turn ${Math.round(turn)}° · Map match ${position[2].toFixed(2)}`;
+}
+
+function mark(result) {
+  if (current < 0) return;
+  marks.set(current, result);
+  ui.waypoint.options[current].textContent = `Chest ${current + 1} · ${result}`;
+  ui.history.textContent = `Chest ${current + 1} marked ${result}. ${marks.size} recorded.`;
+  current = data.waypoints.findIndex((_, i) => i > current && !marks.has(i));
+  ui.waypoint.value = current;
+  ui.found.disabled = ui.missing.disabled = current < 0;
+  draw(ui.video.currentTime);
+}
+
+ui.waypoint.onchange = () => {
+  current = Number(ui.waypoint.value);
+  ui.found.disabled = ui.missing.disabled = false;
+  draw(ui.video.currentTime);
+};
+ui.found.onclick = () => mark("found");
+ui.missing.onclick = () => mark("missing");
+ui.reset.onclick = () => {
+  marks.clear();
+  [...ui.waypoint.options].forEach((option, i) => { option.textContent = `Chest ${i + 1}`; });
+  current = 18;
+  ui.waypoint.value = current;
+  ui.history.textContent = "No chest marks yet.";
+  ui.found.disabled = ui.missing.disabled = false;
+  draw(ui.video.currentTime);
+};
+ui.video.onseeked = () => draw(ui.video.currentTime);
+function tick(_, frame) {
+  draw(frame.mediaTime);
+  ui.video.requestVideoFrameCallback(tick);
+}
+if (ui.video.requestVideoFrameCallback) ui.video.requestVideoFrameCallback(tick);
+else ui.video.ontimeupdate = () => draw(ui.video.currentTime);
+draw(0);
+</script>
+</html>
