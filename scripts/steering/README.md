@@ -39,3 +39,52 @@ python scripts/steering/render.py out/steering/gameplay.mp4 out/steering/telemet
 cp scripts/steering/replay.html out/steering/index.html
 open out/steering/index.html
 ```
+
+## Runtime pipeline
+
+`live.py` works from capture frames as they arrive. It keeps the latest frame,
+reads the compass with a persistent Vision worker, tracks minimap position,
+and runs the project's Dijkstra terrain graph when the player enters a new
+cell or the active chest changes. The arrow points to a waypoint along that
+path. The HUD's distance is to the chest. Use **F** for Found, **M** for
+Missing, and **Q** to quit the preview.
+
+Run a paced repeatable test against the original recording:
+
+```bash
+python scripts/steering/live.py --input "$recording" --start 8 --duration 16 \
+  --chest 19 --mark 5 found --mark 10 missing --headless \
+  --record out/steering/live-feed-test.mp4 --metrics out/steering/live-feed-metrics.json
+```
+
+Run a connected macOS capture device or a known video stream:
+
+```bash
+python scripts/steering/live.py --device <capture-device-index>
+python scripts/steering/live.py --input "<video-stream-url>"
+```
+
+Connect the PlayStation to a Mac-visible HDMI capture source, or provide a
+video stream URL carrying the gameplay. Allow macOS camera access for the
+terminal if prompted for a device input. The crop is calibrated to the
+existing recording's 16:9 HUD layout and minimap scale. A different HUD can
+require recalibration. This is a Mac preview of the feed with the arrow
+composited on it. Console input is independent.
+
+The test uses a source file played at capture rate while all computer vision
+and route calculations run on current frames. The measured overlay latency
+is from frame delivery inside the process. It excludes capture hardware,
+network, display, and console latency. Physical PlayStation capture remains
+untested.
+
+The 16-second paced integration run processed 921 frames, accepted 123 compass
+updates and 40 position updates, and solved ten paths. Median frame-to-overlay
+time was 3.3 ms and the 95th percentile was 25.1 ms. On frames that updated
+heading, the 95th percentile was 33.6 ms. The first cold frame took 527 ms
+and was withheld by the freshness guard. Dijkstra calls took at most 4.7 ms
+in this run. The arrow had usable tracking on 824 frames.
+
+At 8.326 seconds into the excerpt, heading was 99°, the next path waypoint
+was at 255°, and the chest itself was at 228°. The cue commanded a 156°
+right turn toward the waypoint. The injected Found and Missing actions each
+changed the active chest and recomputed the path on the same processed frame.
