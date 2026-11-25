@@ -18,7 +18,9 @@ let displayedRoute;
 let pinTargets = [];
 const misses = new Set();
 const chance = () => Number(ui.chance.value) / 100;
-const filming = () => location.hash === "#northeast" && Boolean(window.DROP_FILM_ROUTE);
+const pinNortheastForRecording = true;
+const filming = () => Boolean(window.DROP_FILM_ROUTE)
+  && (pinNortheastForRecording || location.hash === "#northeast");
 const chestKey = point => selected?.film ? point.join(",") : loot?.id(point);
 const skipped = point => misses.has(chestKey(point));
 const selectEnabled = () => Boolean(loot && selected);

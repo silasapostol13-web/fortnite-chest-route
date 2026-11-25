@@ -193,8 +193,10 @@ farther from the drawn bus line and **Hot Drop** favors nearer landings.
 Both keep at least 85% of the top modeled loot score among reachable candidates
 and can be combined with Reliable Loot. Distance is a proxy for competition.
 
-For the fixed northeast recording scenario, open the planner with
-`#northeast` at the end of the URL. This scenario pins the same island landing
-for any bus line and includes all mapped chests on that island before crossing
-to the mainland. In the current snapshot it covers 19 buried and 14 mainland
-spots. Check that your match's bus can actually reach the island.
+The planner temporarily uses the fixed northeast recording scenario for any
+bus line. It covers all 19 mapped buried spots on the island and 14 mainland
+spots. Dijkstra supplies the terrain costs and paths between stops. Check
+that your match's bus can reach the island. After filming, set
+`pinNortheastForRecording` to `false` in `planner/planner.js` to restore
+automatic landing selection. The fixed scenario then remains available at
+`#northeast`.
