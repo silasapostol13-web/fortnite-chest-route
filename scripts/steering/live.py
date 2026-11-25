@@ -1,4 +1,4 @@
-"""Runtime Fortnite steering from a camera, stream URL or paced video file."""
+"""Runtime Fortnite steering from a macOS window, camera, stream or paced file."""
 
 import argparse
 from base64 import b64encode
@@ -25,13 +25,58 @@ from route import params, planner_source
 from route.travel import LegPather, cell_of
 
 
+class WindowInput:
+    """Decode the ScreenCaptureKit helper protocol into gameplay frames."""
+
+    def __init__(self, helper, selection, crop):
+        self.process = subprocess.Popen([helper, selection], stdout=subprocess.PIPE)
+        header = self.process.stdout.readline().split()
+        if len(header) != 2:
+            self.release()
+            raise SystemExit("Unable to start window capture. See the capture diagnostic above.")
+        self.width, self.height = map(int, header)
+        self.crop = crop
+        if crop:
+            w, h, x, y = crop
+            if min(w, h) <= 0 or min(x, y) < 0 or x + w > self.width or y + h > self.height:
+                self.release()
+                raise SystemExit(f"Window crop must fit inside the {self.width}x{self.height} captured image.")
+
+    def read(self):
+        count = self.width * self.height * 4
+        raw = self.process.stdout.read(count)
+        if len(raw) != count:
+            return False, None
+        frame = np.frombuffer(raw, dtype=np.uint8).reshape(self.height, self.width, 4)
+        if self.crop:
+            w, h, x, y = self.crop
+            frame = frame[y:y + h, x:x + w]
+        elif self.height * 16 > self.width * 9:
+            # A 16:9 gameplay window can include a macOS title bar above the video.
+            frame = frame[-(self.width * 9 // 16):]
+        elif self.height * 16 < self.width * 9:
+            w = self.height * 16 // 9
+            x = (self.width - w) // 2
+            frame = frame[:, x:x + w]
+        return True, cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+    def interrupt(self):
+        if self.process.poll() is None:
+            self.process.terminate()
+
+    def release(self):
+        self.interrupt()
+        self.process.wait(timeout=5)
+        self.process.stdout.close()
+
+
 class Feed:
     """Keep only the newest capture frame so failed OCR can't queue old video."""
 
     def __init__(self, capture, paced):
         self.capture = capture
         self.paced = paced
-        self.fps = capture.get(cv2.CAP_PROP_FPS) or 30
+        self.fps = (capture.get(cv2.CAP_PROP_FPS) or 30) if paced else 30
         self.condition = Condition()
         self.stop = Event()
         self.packet = None
@@ -142,7 +187,7 @@ def overlay(frame, chest_number, player, yaw, waypoint, target, note):
     return image
 
 
-def run(args, ocr_binary):
+def run(args, ocr_binary, window_helper=None):
     atlas = land(cv2.imread(str(planner_source.MAP_IMAGE)))
     terrain = LegPather(planner_source.MAP_IMAGE, planner_source.MAP_SIZE)
     script = (ROOT / "planner" / "film-route.js").read_text()
@@ -151,9 +196,13 @@ def run(args, ocr_binary):
         raise SystemExit(f"Chest must be between 1 and {len(chests)}")
 
     marks = sorted((float(t), result) for t, result in args.mark)
-    capture = cv2.VideoCapture(args.device, cv2.CAP_AVFOUNDATION) if args.device is not None else cv2.VideoCapture(args.input)
-    if not capture.isOpened():
-        raise SystemExit("Couldn't open input. Check the capture device or stream and macOS camera permissions.")
+    if window_helper is not None:
+        selection = "--remote-play" if args.remote_play else str(args.window_id)
+        capture = WindowInput(window_helper, selection, args.window_crop)
+    else:
+        capture = cv2.VideoCapture(args.device, cv2.CAP_AVFOUNDATION) if args.device is not None else cv2.VideoCapture(args.input)
+        if not capture.isOpened():
+            raise SystemExit("Couldn't open input. Check the capture device or stream and macOS camera permissions.")
     paced = args.input is not None and Path(args.input).is_file()
     if args.start:
         if not paced:
@@ -264,6 +313,8 @@ def run(args, ocr_binary):
                     marks.insert(0, (media_time, "found" if key == ord("f") else "missing"))
     finally:
         feed.stop.set()
+        if isinstance(capture, WindowInput):
+            capture.interrupt()
         feed.worker.join(timeout=2)
         process.stdin.close()
         process.wait(timeout=5)
@@ -286,6 +337,11 @@ def main():
     inputs = parser.add_mutually_exclusive_group(required=True)
     inputs.add_argument("--input", help="Local gameplay file or stream URL")
     inputs.add_argument("--device", type=int, help="macOS AVFoundation video input index")
+    inputs.add_argument("--remote-play", action="store_true", help="Capture only the largest visible PS Remote Play window")
+    inputs.add_argument("--window-id", type=int, help="Capture only this macOS window ID")
+    inputs.add_argument("--list-windows", action="store_true", help="List capturable windows and their IDs")
+    parser.add_argument("--window-crop", type=lambda value: tuple(map(int, value.split(":"))),
+                        metavar="W:H:X:Y", help="Gameplay rectangle in the 1920px-wide captured window")
     parser.add_argument("--start", type=float, default=0)
     parser.add_argument("--duration", type=float)
     parser.add_argument("--chest", type=int, default=19, help="First active chest number")
@@ -298,10 +354,27 @@ def main():
         parser.error("--mark result must be found or missing")
     if args.input and args.record and Path(args.input).resolve() == args.record.resolve():
         parser.error("The input and recording output must be different files")
+    window_mode = args.remote_play or args.window_id is not None or args.list_windows
+    if args.window_crop is not None and (not window_mode or len(args.window_crop) != 4):
+        parser.error("--window-crop requires a window and W:H:X:Y")
+    if args.start and (not args.input or not Path(args.input).is_file()):
+        parser.error("--start is only supported for files")
+    helper = None
+    if window_mode:
+        source = Path(__file__).with_name("window_capture.swift")
+        helper = ROOT / "out" / "steering" / "window-capture"
+        helper.parent.mkdir(parents=True, exist_ok=True)
+        if not helper.exists() or helper.stat().st_mtime < source.stat().st_mtime:
+            with tempfile.TemporaryDirectory(dir=helper.parent) as build:
+                compiled = Path(build) / helper.name
+                subprocess.run(["swiftc", "-parse-as-library", str(source), "-o", compiled], check=True)
+                compiled.replace(helper)
+        if args.list_windows:
+            raise SystemExit(subprocess.run([helper, "--list"]).returncode)
     with tempfile.TemporaryDirectory(prefix="fortnite-live-") as tmp:
         binary = Path(tmp) / "ocr"
         subprocess.run(["swiftc", str(Path(__file__).with_name("read_compass.swift")), "-o", binary], check=True)
-        run(args, binary)
+        run(args, binary, helper)
 
 
 if __name__ == "__main__":

@@ -88,3 +88,40 @@ At 8.326 seconds into the excerpt, heading was 99°, the next path waypoint
 was at 255°, and the chest itself was at 228°. The cue commanded a 156°
 right turn toward the waypoint. The injected Found and Missing actions each
 changed the active chest and recomputed the path on the same processed frame.
+
+## PlayStation Remote Play window
+
+1. Connect to the PS5 in the native PS Remote Play app. Open Fortnite and keep
+   the gameplay window unminimized at a fixed size during the test.
+2. In Terminal, run the preview. The helper selects only the Remote Play
+   window and captures video frames without audio.
+
+   ```bash
+   cd /Users/silas/Developer/fortnite-chest-route
+   .venv/bin/python scripts/steering/live.py --remote-play --chest 1
+   ```
+
+3. If macOS prompts, allow Terminal under **System Settings → Privacy &
+   Security → Screen & System Audio Recording** and reopen Terminal. The
+   overlay appears in a separate Mac preview window. Focus that preview to
+   use **F**, **M**, and **Q**. Keep controller input directed to Remote Play.
+
+For explicit window selection, run
+`.venv/bin/python scripts/steering/live.py --list-windows`, choose the ID of the
+gameplay window, and use `--window-id ID` in place of `--remote-play`.
+Start with a clean 16:9 gameplay image and dismiss connection or toolbar
+overlays. If the HUD has bars or offset framing, `--window-crop W:H:X:Y`
+selects the gameplay rectangle in the captured image normalized to 1920
+pixels wide. The default tries to remove an extra title bar above 16:9
+gameplay. Restart capture after resizing the window.
+
+Verified selective capture by replaying the existing Fortnite clip in
+a standalone local window, then passing only that window through the runtime
+OCR, minimap tracker, Dijkstra, and compositing pipeline. The 14-second
+run processed 294 frames, had 260 tracked frames, and computed nine paths.
+The waypoint bearing differed from the chest bearing by up to 27°.
+Frame delivery to overlay p95 was 28 ms inside Python. The measurements
+exclude the console, Remote Play network path, and ScreenCaptureKit itself.
+See `out/steering/window-feed-test.mp4` and
+`out/steering/window-feed-metrics.json`. A PS5 Remote Play gameplay stream
+was unavailable during verification.
