@@ -284,11 +284,14 @@ function updateUI() {
     const angle = heading(selected.chests[step - 1], selected.chests[step]);
     const meters = leg.meters ? `about ${leg.meters} m` : "under 1 m";
     const seconds = leg.seconds >= .5 ? `about ${Math.round(leg.seconds)} s` : "under 1 s";
-    ui.detail.textContent = `${Math.round(angle) % 360}° ${compass(angle)}  ·  ${meters}  ·  ${seconds}`;
+    const bearing = `${Math.round(angle) % 360}° ${compass(angle)}  ·  ${meters}`;
+    ui.detail.textContent = selected.film ? bearing : `${bearing}  ·  ${seconds}`;
   } else if (planned) {
     ui.detail.textContent = flying
       ? `Chest 1 / ${selected.chests.length}  ·  land on the red pin`
-      : `${selected.chests.length} chest spots  ·  about ${clock(selected.seconds)} on the ground`;
+      : selected.film
+        ? `${selected.chests.length} chest spots  ·  shortest distance first`
+        : `${selected.chests.length} chest spots  ·  about ${clock(selected.seconds)} on the ground`;
   } else {
     ui.detail.textContent = ready ? "Drag a line across the island to find your drop." : "Loading map…";
   }
