@@ -192,3 +192,9 @@ Set **Drop style** before drawing a bus path or using the sample bus.
 farther from the drawn bus line and **Hot Drop** favors nearer landings.
 Both keep at least 85% of the top modeled loot score among reachable candidates
 and can be combined with Reliable Loot. Distance is a proxy for competition.
+
+For the fixed northeast recording scenario, open the planner with
+`#northeast` at the end of the URL. This scenario pins the same island landing
+for any bus line and includes all mapped chests on that island before crossing
+to the mainland. In the current snapshot it covers 19 buried and 14 mainland
+spots. Check that your match's bus can actually reach the island.

@@ -18,7 +18,9 @@ let displayedRoute;
 let pinTargets = [];
 const misses = new Set();
 const chance = () => Number(ui.chance.value) / 100;
-const skipped = point => loot && misses.has(loot.id(point));
+const filming = () => location.hash === "#northeast" && Boolean(window.DROP_FILM_ROUTE);
+const chestKey = point => selected?.film ? point.join(",") : loot?.id(point);
+const skipped = point => misses.has(chestKey(point));
 const selectEnabled = () => Boolean(loot && selected);
 let mode = "plan";
 let step = 0;
@@ -272,7 +274,7 @@ function updateUI() {
   const planned = Boolean(selected);
   const flying = mode === "fly";
   const leg = flying && step > 0 ? selected.legs[step - 1] : null;
-  ui.phase.textContent = flying ? (step === 0 ? "LAND HERE" : "CHEST FLYOVER") : planned ? "RECOMMENDED DROP" : "BATTLE BUS";
+  ui.phase.textContent = flying ? (step === 0 ? "LAND HERE" : "CHEST FLYOVER") : planned ? (selected.film ? "NORTHEAST ROUTE" : "RECOMMENDED DROP") : "BATTLE BUS";
   ui.title.textContent = flying && step > 0 ? `Chest ${step + 1} / ${selected.chests.length}` : planned ? selected.name : "Draw your bus path";
   if (leg) {
     const angle = heading(selected.chests[step - 1], selected.chests[step]);
@@ -286,6 +288,13 @@ function updateUI() {
   } else {
     ui.detail.textContent = ready ? "Drag a line across the island to find your drop." : "Loading map…";
   }
+  if (selected?.film && flying) {
+    const dig = selected.types[step] === "buried";
+    ui.phase.textContent = step === 0 ? (dig ? "LAND & DIG" : "LAND HERE")
+      : step === selected.island ? "CROSS TO MAINLAND" : dig ? "DIG HERE"
+      : step < selected.island ? "ISLAND CHEST" : "MAINLAND CHEST";
+  }
+  if (!planned && ready && filming()) ui.detail.textContent = "Start on the northeast island, then cross to the mainland.";
   if (mode === "edit") {
     ui.phase.textContent = "BATTLE BUS";
     ui.title.textContent = "Adjust your bus path";
@@ -294,27 +303,32 @@ function updateUI() {
   const options = selectEnabled();
   ui.routeTools.hidden = !options || mode === "edit";
   ui.yield.hidden = !options;
+  ui.reliability.hidden = Boolean(selected?.film);
   ui.notice.hidden = !notice;
   ui.notice.textContent = notice;
   ui.reliability.textContent = reliableMode ? "Reliable loot on" : "Reliable loot";
   ui.reliability.setAttribute("aria-pressed", reliableMode);
   ui.reliability.disabled = Boolean(motion) || misses.size > 0;
-  const customDrop = ui.dropStyle.value !== "standard";
-  ui.styleTools.hidden = mode === "fly" || !loot;
+  const customDrop = ["quiet", "hot"].includes(ui.dropStyle.value);
+  ui.styleTools.hidden = mode === "fly" || !loot || filming();
   ui.dropStyle.disabled = Boolean(motion) || misses.size > 0;
   ui.glide.hidden = !options || !customDrop;
   if (options && customDrop) {
     const meters = Math.round(loot.offBus(drawnBus, loot.id(selected.chests[0])) / 10) * 10;
     ui.glide.textContent = `About ${meters} m from your bus line`;
   }
-  ui.chanceRow.hidden = !options || !reliableMode || mode === "edit";
+  ui.chanceRow.hidden = !options || !reliableMode || selected.film || mode === "edit";
   ui.chance.disabled = Boolean(motion) || misses.size > 0;
   ui.chanceValue.value = `${ui.chance.value}%`;
   if (options) {
     const stops = selected.chests.filter(point => !skipped(point));
-    const guaranteed = stops.filter(point => loot.isGuaranteed(loot.id(point))).length;
-    const expected = guaranteed + (stops.length - guaranteed) * chance();
-    ui.yield.textContent = `${guaranteed} guaranteed · about ${expected.toFixed(1)} expected chests`;
+    if (selected.film) {
+      ui.yield.textContent = `${selected.island} island (${selected.buried} buried) · ${selected.chests.length - selected.island} mainland`;
+    } else {
+      const guaranteed = stops.filter(point => loot.isGuaranteed(loot.id(point))).length;
+      const expected = guaranteed + (stops.length - guaranteed) * chance();
+      ui.yield.textContent = `${guaranteed} guaranteed · about ${expected.toFixed(1)} expected chests`;
+    }
     if (displayedRoute !== selected) {
       ui.jump.replaceChildren(new Option("Select chest", ""), ...selected.chests.map((point, i) =>
         new Option(`Chest ${i + 1}${skipped(point) ? " · empty" : ""}`, String(i))));
@@ -326,13 +340,13 @@ function updateUI() {
   ui.progress.hidden = !flying;
   if (planned) ui.fill.style.width = `${(step + 1) / selected.chests.length * 100}%`;
   ui.next.innerHTML = mode === "edit" ? "Done <span>✓</span>" : flying ? "Next chest <span>→</span>"
-    : planned ? "Start flyover <span>→</span>" : "Try a sample bus <span>↗</span>";
+    : planned ? "Start flyover <span>→</span>" : filming() ? "Show route <span>→</span>" : "Try a sample bus <span>↗</span>";
   ui.next.disabled = !ready || Boolean(motion) || (flying && step === selected.chests.length - 1);
   ui.back.hidden = !flying;
   ui.back.disabled = step === 0 || Boolean(motion);
   ui.overview.hidden = !flying;
   ui.reset.hidden = !planned;
-  ui.edit.hidden = mode !== "overview";
+  ui.edit.hidden = mode !== "overview" || !drawnBus;
   ui.edit.disabled = Boolean(motion);
   ui.skip.hidden = !flying || !options;
   ui.skip.disabled = !flying || Boolean(motion) || selected.chests.slice(step).some(skipped);
@@ -355,6 +369,7 @@ function nearestRoute(a, b) {
 
 function routeForStyle() {
   const style = ui.dropStyle.value;
+  if (filming()) return { ...window.DROP_FILM_ROUTE, bus: baseRoute.bus };
   if (!reliableMode && style === "standard") return baseRoute;
   return loot.planFrom(baseRoute, reliableMode ? chance() : 1, style === "standard" ? null : drawnBus, style);
 }
@@ -374,7 +389,12 @@ function selectRoute(route, actual, nextMode = "overview") {
 }
 
 function updateReliability() {
-  if (!baseRoute || !loot || misses.size || motion) return;
+  if (!baseRoute) { updateUI(); return; }
+  if (!loot || misses.size || motion) return;
+  if (!drawnBus && !filming()) {
+    const [a, b] = baseRoute.bus;
+    drawnBus = [.27, .73].map(t => a.map((x, i) => mix(x, b[i], t)));
+  }
   selected = routeForStyle();
   if (mode === "overview" || step === 0) activate(mode, 0, 650);
   else activate("fly", 0, 650);
@@ -387,7 +407,14 @@ function jumpTo(index) {
 
 function skipChest() {
   if (ui.skip.hidden || ui.skip.disabled) return;
-  misses.add(loot.id(selected.chests[step]));
+  misses.add(chestKey(selected.chests[step]));
+  if (selected.film) {
+    selected = { ...selected };
+    notice = "Empty chest marked. Continue to the next filming stop.";
+    updateUI();
+    requestDraw();
+    return;
+  }
   selected = loot.replan(selected, step, misses, reliableMode ? chance() : 1);
   notice = step + 1 < selected.chests.length ? "Empty chest marked. Remaining route updated."
     : "Empty chest marked. No more stops fit the estimated time.";
@@ -400,7 +427,7 @@ function next() {
   if (!selected) {
     const sample = data.routes.find(route => route.heading === 300 && route.offset === -240);
     const [a, b] = sample.bus;
-    selectRoute(sample, [.27, .73].map(t => a.map((x, i) => mix(x, b[i], t))));
+    selectRoute(sample, filming() ? null : [.27, .73].map(t => a.map((x, i) => mix(x, b[i], t))));
   } else if (mode === "edit") {
     activate("overview", 0, 730);
   } else if (mode !== "fly") {
