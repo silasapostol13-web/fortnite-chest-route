@@ -194,9 +194,9 @@ Both keep at least 85% of the top modeled loot score among reachable candidates
 and can be combined with Reliable Loot. Distance is a proxy for competition.
 
 The planner temporarily uses the fixed northeast recording scenario for any
-bus line. It covers all 19 mapped buried spots on the island and 14 mainland
-spots. Dijkstra supplies the terrain costs and paths between stops. Check
-that your match's bus can reach the island. After filming, set
+bus line. It uses the regular route solver on the full mapped chest list,
+including buried chests. Dijkstra supplies terrain costs and paths between
+stops. Check that your match's bus can reach the island. After filming, set
 `pinNortheastForRecording` to `false` in `planner/planner.js` to restore
 automatic landing selection. The fixed scenario then remains available at
 `#northeast`.

@@ -58,7 +58,7 @@ function routeCamera() {
 
 function chestCamera(index) {
   const [x, y] = selected.chests[index];
-  const closeIslandView = selected.film && index < selected.island;
+  const closeIslandView = selected.film && selected.onStartIsland[index];
   const viewWidth = data.width * (closeIslandView ? .06 : .14);
   return [x, y, Math.min(size.w, size.h) / viewWidth];
 }
@@ -294,11 +294,11 @@ function updateUI() {
   }
   if (selected?.film && flying) {
     const dig = selected.types[step] === "buried";
+    const leaving = step > 0 && selected.onStartIsland[step - 1] && !selected.onStartIsland[step];
     ui.phase.textContent = step === 0 ? (dig ? "LAND & DIG" : "LAND HERE")
-      : step === selected.island ? "CROSS TO MAINLAND" : dig ? "DIG HERE"
-      : step < selected.island ? "ISLAND CHEST" : "MAINLAND CHEST";
+      : leaving ? "CROSS TO NEXT SHORE" : dig ? "DIG HERE" : "ROUTE CHEST";
   }
-  if (!planned && ready && filming()) ui.detail.textContent = "Start on the northeast island, then cross to the mainland.";
+  if (!planned && ready && filming()) ui.detail.textContent = "Start on the northeast island and follow the generated chest route.";
   if (mode === "edit") {
     ui.phase.textContent = "BATTLE BUS";
     ui.title.textContent = "Adjust your bus path";
@@ -327,7 +327,8 @@ function updateUI() {
   if (options) {
     const stops = selected.chests.filter(point => !skipped(point));
     if (selected.film) {
-      ui.yield.textContent = `${selected.island} island (${selected.buried} buried) · ${selected.chests.length - selected.island} mainland`;
+      const buried = selected.types.filter(kind => kind === "buried").length;
+      ui.yield.textContent = `${buried} buried · ${selected.chests.length - buried} other chest spots`;
     } else {
       const guaranteed = stops.filter(point => loot.isGuaranteed(loot.id(point))).length;
       const expected = guaranteed + (stops.length - guaranteed) * chance();
