@@ -74,8 +74,7 @@ composited on it. Console input is independent.
 The test uses a source file played at capture rate while all computer vision
 and route calculations run on current frames. The measured overlay latency
 is from frame delivery inside the process. It excludes capture hardware,
-network, display, and console latency. Physical PlayStation capture remains
-untested.
+network, display, and console latency. This benchmark uses the recording.
 
 The 16-second paced integration run processed 921 frames, accepted 123 compass
 updates and 40 position updates, and solved ten paths. Median frame-to-overlay
@@ -123,5 +122,34 @@ The waypoint bearing differed from the chest bearing by up to 27°.
 Frame delivery to overlay p95 was 28 ms inside Python. The measurements
 exclude the console, Remote Play network path, and ScreenCaptureKit itself.
 See `out/steering/window-feed-test.mp4` and
-`out/steering/window-feed-metrics.json`. A PS5 Remote Play gameplay stream
-was unavailable during verification.
+`out/steering/window-feed-metrics.json`. The later console test is described below.
+
+### Draw directly over Remote Play
+
+Use the click-through HUD to keep Remote Play focused while the arrow is drawn
+over the gameplay window:
+
+```bash
+cd /Users/silas/Developer/fortnite-chest-route
+.venv/bin/python scripts/steering/live.py --remote-play --hud --chest 1
+```
+
+The HUD appears once the compass and minimap are tracked, and disappears while
+tracking is stale. Stop the runner with Control-C in Terminal. The separate
+preview mode supports the **Found** and **Missing** keys. The click-through
+HUD has no keyboard controls. The capture helper favors an on-screen Remote
+Play window, normalizes the stream's black bars, and retries a temporary
+capture disconnect.
+
+On PS5, turn on **Settings → System → Remote Play → Hide Remote Play
+Connection Status**. During the console test, that banner overlapped the
+Fortnite compass and caused frequent heading loss. [PlayStation Remote
+Play support](https://www.playstation.com/en-au/support/games/playstation-remote-play-on-pc-and-mac/)
+
+The two-minute PS5 match test processed 2,996 frames at about 25 fps and
+showed the click-through HUD above the Remote Play window while tracking
+was available. The compass banner limited full tracking to 291 frames.
+The first lock had a 7° heading, 139° path waypoint and 74° direct chest
+bearing. Frame delivery to overlay p95 was 55 ms inside the process.
+Capture recovered after Remote Play stream interruptions. Coverage after
+disabling the banner remains unverified.

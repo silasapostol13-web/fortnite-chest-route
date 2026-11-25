@@ -72,7 +72,7 @@ struct WindowCapture {
             let windows = shareable.windows.filter { $0.frame.width >= 320 && $0.frame.height >= 180 }
             if mode == "--list" {
                 for window in windows {
-                    print("\(window.windowID)\t\(window.owningApplication?.applicationName ?? "")\t\(window.title ?? "")")
+                    print("\(window.windowID)\t\(window.owningApplication?.applicationName ?? "")\t\(window.title ?? "")\t\(window.isOnScreen)\t\(Int(window.frame.width))x\(Int(window.frame.height))")
                 }
                 return
             }
@@ -82,7 +82,10 @@ struct WindowCapture {
                     let owner = $0.owningApplication?.applicationName.lowercased() ?? ""
                     let bundle = $0.owningApplication?.bundleIdentifier.lowercased() ?? ""
                     return owner.contains("remote play") || bundle.contains("remoteplay")
-                }.max { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }
+                }.max {
+                    if $0.isOnScreen != $1.isOnScreen { return $1.isOnScreen }
+                    return $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height
+                }
             } else if let id = UInt32(mode) {
                 selected = windows.first { $0.windowID == id }
             } else {
@@ -109,10 +112,13 @@ struct WindowCapture {
                                   configuration: config, delegate: output)
             try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: DispatchQueue(label: "gameplay-frames"))
             // The receiver reads exactly this header followed by tightly packed BGRA frames.
-            FileHandle.standardOutput.write(Data("\(width) \(height)\n".utf8))
+            FileHandle.standardOutput.write(Data("\(width) \(height) \(window.windowID)\n".utf8))
             report("Capturing only window \(window.windowID) from \(window.owningApplication?.applicationName ?? "selected app").")
             try await stream.startCapture()
-            while true { try await Task.sleep(nanoseconds: 1_000_000_000) }
+            while true {
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+                withExtendedLifetime((stream, output)) {}
+            }
         } catch {
             report("Window capture failed: \(error.localizedDescription)")
             exit(1)

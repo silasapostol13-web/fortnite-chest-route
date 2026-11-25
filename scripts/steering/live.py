@@ -29,45 +29,87 @@ class WindowInput:
     """Decode the ScreenCaptureKit helper protocol into gameplay frames."""
 
     def __init__(self, helper, selection, crop):
-        self.process = subprocess.Popen([helper, selection], stdout=subprocess.PIPE)
-        header = self.process.stdout.readline().split()
-        if len(header) != 2:
-            self.release()
+        self.command = [helper, selection]
+        self.configured_crop = crop
+        self.stopped = Event()
+        self.process = None
+        if not self.connect():
             raise SystemExit("Unable to start window capture. See the capture diagnostic above.")
-        self.width, self.height = map(int, header)
-        self.crop = crop
-        if crop:
-            w, h, x, y = crop
+
+    def connect(self):
+        self.process = subprocess.Popen(self.command, stdout=subprocess.PIPE)
+        header = self.process.stdout.readline().split()
+        if len(header) != 3:
+            self.close_process()
+            return False
+        self.width, self.height, self.window_id = map(int, header)
+        self.crop = self.configured_crop
+        if self.crop:
+            w, h, x, y = self.crop
             if min(w, h) <= 0 or min(x, y) < 0 or x + w > self.width or y + h > self.height:
-                self.release()
+                self.close_process()
                 raise SystemExit(f"Window crop must fit inside the {self.width}x{self.height} captured image.")
+        return True
 
     def read(self):
-        count = self.width * self.height * 4
-        raw = self.process.stdout.read(count)
-        if len(raw) != count:
+        for attempt in range(7):
+            if self.stopped.is_set():
+                return False, None
+            if self.process is None and not self.connect():
+                self.stopped.wait(.4)
+                continue
+            count = self.width * self.height * 4
+            raw = self.process.stdout.read(count)
+            if len(raw) == count:
+                break
+            self.close_process()
+            if attempt == 0 and not self.stopped.is_set():
+                print("Window stream interrupted. Reopening the selected window.", file=sys.stderr, flush=True)
+            self.stopped.wait(.25)
+        else:
             return False, None
         frame = np.frombuffer(raw, dtype=np.uint8).reshape(self.height, self.width, 4)
         if self.crop:
             w, h, x, y = self.crop
             frame = frame[y:y + h, x:x + w]
-        elif self.height * 16 > self.width * 9:
-            # A 16:9 gameplay window can include a macOS title bar above the video.
-            frame = frame[-(self.width * 9 // 16):]
-        elif self.height * 16 < self.width * 9:
-            w = self.height * 16 // 9
-            x = (self.width - w) // 2
-            frame = frame[:, x:x + w]
+        elif self.height * 16 != self.width * 9:
+            self.crop = gameplay_rectangle(frame)
+            w, h, x, y = self.crop
+            print(f"Using gameplay crop {w}:{h}:{x}:{y}.", file=sys.stderr)
+            frame = frame[y:y + h, x:x + w]
         return True, cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
 
     def interrupt(self):
-        if self.process.poll() is None:
-            self.process.terminate()
+        self.stopped.set()
+        process = self.process
+        if process is not None and process.poll() is None:
+            process.terminate()
+
+    def close_process(self):
+        process, self.process = self.process, None
+        if process is not None:
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=5)
+            process.stdout.close()
 
     def release(self):
-        self.interrupt()
-        self.process.wait(timeout=5)
-        self.process.stdout.close()
+        self.stopped.set()
+        self.close_process()
+
+
+def gameplay_rectangle(frame):
+    """Fit centrally letterboxed gameplay or trim a lone macOS title bar."""
+    height, width = frame.shape[:2]
+    if height * 16 > width * 9:
+        game_height = width * 9 // 16
+        extra = height - game_height
+        dark_top = np.mean(frame[:8, :, :3].max(axis=2) < 16) > .95
+        dark_bottom = np.mean(frame[-8:, :, :3].max(axis=2) < 16) > .95
+        y = extra // 2 if dark_top and dark_bottom else 0 if dark_bottom else extra
+        return width, game_height, 0, y
+    game_width = height * 16 // 9
+    return game_width, height, (width - game_width) // 2, 0
 
 
 class Feed:
@@ -187,7 +229,7 @@ def overlay(frame, chest_number, player, yaw, waypoint, target, note):
     return image
 
 
-def run(args, ocr_binary, window_helper=None):
+def run(args, ocr_binary, window_helper=None, hud_binary=None):
     atlas = land(cv2.imread(str(planner_source.MAP_IMAGE)))
     terrain = LegPather(planner_source.MAP_IMAGE, planner_source.MAP_SIZE)
     script = (ROOT / "planner" / "film-route.js").read_text()
@@ -219,6 +261,7 @@ def run(args, ocr_binary, window_helper=None):
         ], stdin=subprocess.PIPE)
     process = subprocess.Popen([ocr_binary, "--stream"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                text=True, bufsize=1)
+    hud = subprocess.Popen([hud_binary], stdin=subprocess.PIPE, text=True) if hud_binary else None
     feed = Feed(capture, paced)
     index = args.chest - 1
     sequence = -1
@@ -228,11 +271,16 @@ def run(args, ocr_binary, window_helper=None):
     rows = []
     processed = frames_written = 0
     last_frame = None
+    reported_lock = False
+    next_hud_update = float("-inf")
     started = monotonic()
     try:
         while not feed.stop.is_set():
             packet = feed.after(sequence)
             if packet is None:
+                if hud:
+                    hud.stdin.write("null\n")
+                    hud.stdin.flush()
                 if feed.done or (args.duration and monotonic() - started >= args.duration):
                     break
                 if not args.headless and last_frame is not None:
@@ -284,6 +332,20 @@ def run(args, ocr_binary, window_helper=None):
             image = overlay(frame, index + 1, player if tracked else None, yaw, waypoint, target,
                             note if media_time < note_until else "")
             latency_ms = (monotonic() - arrived) * 1000
+            if tracked and not reported_lock:
+                bearing, turn, _ = steering(player, yaw, waypoint)
+                print(f"Tracking locked: chest {index + 1}, heading {yaw}°, waypoint {bearing:.0f}°, turn {turn:+.0f}°.",
+                      flush=True)
+                reported_lock = True
+            if hud and media_time >= next_hud_update:
+                next_hud_update = media_time + .05
+                snapshot = None
+                if tracked:
+                    _, turn, _ = steering(player, yaw, waypoint)
+                    snapshot = {"window": capture.window_id, "chest": index + 1, "turn": turn,
+                                "meters": round(dist(player, target) * params.METERS_PER_PX)}
+                hud.stdin.write(json.dumps(snapshot) + "\n")
+                hud.stdin.flush()
             processed += 1
             if args.metrics:
                 sample = {"t": round(media_time, 3), "frame": sequence, "chest": index + 1, "tracked": tracked,
@@ -318,6 +380,9 @@ def run(args, ocr_binary, window_helper=None):
         feed.worker.join(timeout=2)
         process.stdin.close()
         process.wait(timeout=5)
+        if hud:
+            hud.stdin.close()
+            hud.wait(timeout=5)
         if encoder:
             encoder.stdin.close()
             if encoder.wait() != 0:
@@ -346,6 +411,7 @@ def main():
     parser.add_argument("--duration", type=float)
     parser.add_argument("--chest", type=int, default=19, help="First active chest number")
     parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--hud", action="store_true", help="Draw a nonactivating, click-through HUD on the selected window")
     parser.add_argument("--record", type=Path)
     parser.add_argument("--metrics", type=Path)
     parser.add_argument("--mark", nargs=2, action="append", default=[], metavar=("SECONDS", "found|missing"))
@@ -359,6 +425,10 @@ def main():
         parser.error("--window-crop requires a window and W:H:X:Y")
     if args.start and (not args.input or not Path(args.input).is_file()):
         parser.error("--start is only supported for files")
+    if args.hud:
+        if not window_mode or args.list_windows:
+            parser.error("--hud requires a gameplay window")
+        args.headless = True
     helper = None
     if window_mode:
         source = Path(__file__).with_name("window_capture.swift")
@@ -374,7 +444,11 @@ def main():
     with tempfile.TemporaryDirectory(prefix="fortnite-live-") as tmp:
         binary = Path(tmp) / "ocr"
         subprocess.run(["swiftc", str(Path(__file__).with_name("read_compass.swift")), "-o", binary], check=True)
-        run(args, binary, helper)
+        hud_binary = None
+        if args.hud:
+            hud_binary = Path(tmp) / "hud"
+            subprocess.run(["swiftc", str(Path(__file__).with_name("window_hud.swift")), "-o", hud_binary], check=True)
+        run(args, binary, helper, hud_binary)
 
 
 if __name__ == "__main__":
