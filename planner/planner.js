@@ -58,7 +58,9 @@ function routeCamera() {
 
 function chestCamera(index) {
   const [x, y] = selected.chests[index];
-  return [x, y, Math.min(size.w, size.h) / (data.width * .14)];
+  const closeIslandView = selected.film && index < selected.island;
+  const viewWidth = data.width * (closeIslandView ? .06 : .14);
+  return [x, y, Math.min(size.w, size.h) / viewWidth];
 }
 
 function destinationCamera() {
