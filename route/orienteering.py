@@ -194,11 +194,12 @@ def _swap_out(T, route, pool, stop):
 def _improve(T, route, pool, budget, stop):
     for _ in range(4):
         before = route_time(T, route, stop)
+        before_count = len(route)
         route = _two_opt(T, route)
         route = _or_opt(T, route)
         route = _swap_out(T, route, pool, stop)
         route = _insert_greedy(T, route, pool, budget, stop)
-        if route_time(T, route, stop) >= before - 1e-9 and len(route) == len(route):
+        if route_time(T, route, stop) >= before - 1e-9 and len(route) == before_count:
             break
     return route
 

@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
 
 from route import params, planner_source as source
-from route.orienteering import ils_best
+from route.orienteering import _two_opt, ils_best, nearest_neighbor, route_time
 from route.travel import LegPather, compute_travel_matrix
 
 
@@ -37,19 +37,25 @@ def main():
     target = 33
     # Find a budget that yields the desired number of stops. The route search
     # is the same iterated local search used for standard drop planning.
-    low, high = 0, 360
-    order, _ = ils_best(travel, start, candidates, high, iters=200)
-    if len(order) < target:
+    greedy, _ = nearest_neighbor(travel, start, candidates, 360)
+    if len(greedy) < target:
         raise ValueError("The recording route did not reach the target stop count")
+    order = _two_opt(travel, greedy[:target])
+    print(f"Nearest-chest baseline: {route_time(travel, greedy[:target], params.CHEST_STOP_S):.1f} s")
+    print(f"Reordered nearest-chest baseline: {route_time(travel, order, params.CHEST_STOP_S):.1f} s")
+    low, high = 0, route_time(travel, order, params.CHEST_STOP_S)
     for _ in range(8):
         budget = (low + high) / 2
-        trial, _ = ils_best(travel, start, candidates, budget, iters=200)
-        if len(trial) >= target:
-            high = budget
-            order = trial
+        trials = [ils_best(travel, start, candidates, budget, iters=300, seed=seed)[0]
+                  for seed in range(3)]
+        feasible = [trial[:target] for trial in trials if len(trial) >= target]
+        if feasible:
+            contender = min(feasible, key=lambda trial: route_time(travel, trial, params.CHEST_STOP_S))
+            high = route_time(travel, contender, params.CHEST_STOP_S)
+            order = contender
         else:
             low = budget
-    order = order[:target]
+    print(f"Selected route: {route_time(travel, order, params.CHEST_STOP_S):.1f} s")
 
     chests = coordinates[order].tolist()
     legs = []
