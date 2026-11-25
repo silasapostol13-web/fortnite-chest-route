@@ -1,4 +1,4 @@
-"""Clear the pinned northeast island, then greedily follow shortest distances."""
+"""Follow nearest unvisited chests by distance from a pinned northeast start."""
 
 import csv
 import json
@@ -40,12 +40,11 @@ def main():
     order = [start]
     while len(order) < target:
         current = order[-1]
-        pool = (remaining & island) or remaining
         limit = 30
         while True:
             distances = dijkstra_within(terrain.graph, cells[current], limit)
             options = []
-            for i in pool:
+            for i in remaining:
                 if cells[i] in distances:
                     straight = dist(coordinates[current], coordinates[i]) * params.METERS_PER_PX
                     modeled = distances[cells[i]] * params.RUN_SPEED

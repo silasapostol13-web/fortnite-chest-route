@@ -194,9 +194,9 @@ Both keep at least 85% of the top modeled loot score among reachable candidates
 and can be combined with Reliable Loot. Distance is a proxy for competition.
 
 The planner temporarily uses the fixed northeast recording scenario for any
-bus line. It clears mapped spots on the starting island first. At each step,
-it uses Dijkstra distance to choose the closest unvisited spot, searching the
-full mapped chest list after the island is clear. Check that your match's bus can reach the island. After filming, set
+bus line. At every step it uses Dijkstra distance to choose the closest
+unvisited spot from the full mapped chest list. In the current snapshot,
+this naturally clears all 19 island spots before crossing. Check that your match's bus can reach the island. After filming, set
 `pinNortheastForRecording` to `false` in `planner/planner.js` to restore
 automatic landing selection. The fixed scenario then remains available at
 `#northeast`.
