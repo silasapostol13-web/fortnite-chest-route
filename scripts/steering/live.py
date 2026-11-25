@@ -256,7 +256,7 @@ def run(args, ocr_binary, window_helper=None, hud_binary=None):
         args.record.parent.mkdir(parents=True, exist_ok=True)
         encoder = subprocess.Popen([
             "ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", "1280x720",
-            "-r", "15", "-i", "-", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20",
+            "-r", str(args.record_fps), "-i", "-", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20",
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(args.record),
         ], stdin=subprocess.PIPE)
     process = subprocess.Popen([ocr_binary, "--stream"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -362,7 +362,7 @@ def run(args, ocr_binary, window_helper=None, hud_binary=None):
                                    "position_age_ms": round((now - last_pos) * 1000, 2)})
                 rows.append(sample)
             if encoder:
-                desired = int(media_time * 15) + 1
+                desired = int(media_time * args.record_fps) + 1
                 while frames_written < desired:
                     encoder.stdin.write(image.tobytes())
                     frames_written += 1
@@ -413,6 +413,8 @@ def main():
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--hud", action="store_true", help="Draw a nonactivating, click-through HUD on the selected window")
     parser.add_argument("--record", type=Path)
+    parser.add_argument("--record-fps", type=int, choices=(15, 30, 60), default=15,
+                        help="Output recording frame rate. The capture device determines the unique input frame rate.")
     parser.add_argument("--metrics", type=Path)
     parser.add_argument("--mark", nargs=2, action="append", default=[], metavar=("SECONDS", "found|missing"))
     args = parser.parse_args()

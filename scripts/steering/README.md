@@ -153,3 +153,34 @@ The first lock had a 7° heading, 139° path waypoint and 74° direct chest
 bearing. Frame delivery to overlay p95 was 55 ms inside the process.
 Capture recovered after Remote Play stream interruptions. Coverage after
 disabling the banner remains unverified.
+
+## Film with HDMI passthrough
+
+Connect **PS5 HDMI OUT → capture card HDMI IN → capture card HDMI OUT → TV**.
+Connect the card's USB cable to the Mac. Play on the TV with the DualSense
+paired to the PS5. The Mac preview and recording receive the captured copy.
+For gameplay capture, disable **Settings → System → HDMI → Enable HDCP** on
+the PS5. Start with a 16:9 1080p SDR feed for the calibrated HUD crops.
+
+List the video devices in Terminal and identify the capture card index.
+Allow Terminal camera access if prompted. FFmpeg exits after printing the list.
+
+```bash
+cd /Users/silas/Developer/fortnite-chest-route
+ffmpeg -f avfoundation -list_devices true -i ""
+```
+
+Replace `DEVICE_INDEX` with the capture card index and verify that the
+preview shows Fortnite.
+
+```bash
+.venv/bin/python scripts/steering/live.py --device DEVICE_INDEX --chest 1 \
+  --record-fps 60 --record out/steering/wired-take.mp4 \
+  --metrics out/steering/wired-take-metrics.json
+```
+
+Use **F** and **M** in the Mac preview to advance the active chest. Press
+**Q** to stop and finalize the MP4. The output has a 60 fps timeline and
+repeats the latest available frame when capture or processing runs below
+60 fps. It is a 720p overlay video without audio. Capture game audio
+separately if it is needed for the edit.
