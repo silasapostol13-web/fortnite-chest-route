@@ -422,9 +422,9 @@ final class Hud {
         ctx.restoreGState()
         let face = CGPath(ellipseIn: CGRect(x: c.x - r + 5, y: c.y - r + 5, width: 2 * r - 10, height: 2 * r - 10), transform: nil)
         gradient(ctx, face, [rgb(28, 46, 96, 0.9), rgb(12, 16, 40, 0.9)], from: CGPoint(x: c.x, y: c.y - r), to: CGPoint(x: c.x, y: c.y + r))
-        // Compass rose and hour ticks behind the needle.
+        // Compass rose (only when no arrow is shown; the arrow lies on its own tilted ground) and hour ticks.
         ctx.setFillColor(rgb(255, 255, 255, 0.07))
-        for i in 0..<4 {
+        for i in 0..<4 where search || scanning {
             let a = Double(i) * .pi / 2
             let tip = CGPoint(x: c.x + CGFloat(sin(a)) * 34, y: c.y - CGFloat(cos(a)) * 34)
             let left = CGPoint(x: c.x + CGFloat(sin(a - 1.2)) * 8, y: c.y - CGFloat(cos(a - 1.2)) * 8)
@@ -477,13 +477,23 @@ final class Hud {
             ctx.fillEllipse(in: CGRect(x: c.x - 3.5, y: c.y - 3.5, width: 7, height: 7))
             return
         }
-        // One straight arrow, always solid. It turns like a compass needle: up is where the player faces, and it
-        // points the way to turn. Closeness changes its shape and its glow: long and skinny at 60 m or more,
-        // short and stubby right at the chest, with a halo that grows and heats up from gold to ember red.
+        // One straight arrow, always solid, drawn as a 3D block lying on a tilted ground plane (like a car sat-nav):
+        // lit top face, darker side walls, soft shadow. It turns about the vertical axis: away from the viewer is
+        // where the player faces, and it points the way to turn. There is no up/down: the map has no heights.
+        // Closeness changes its shape and its glow: long and skinny at 60 m or more, short, stubby and thick
+        // right at the chest, with a halo that grows and heats up from gold to ember red.
         let onCourse = abs(angle) < 15
         let k = near * near * (3 - 2 * near)                  // smoothstep, so the shape change is spread over the approach
-        func mix(_ far: Double, _ close: Double) -> CGFloat { CGFloat(far + (close - far) * k) }
-        let tip = mix(-38, -23), tail = mix(34, 17), shaft = mix(3.5, 15.5), wing = mix(11.5, 31), neck = tip + mix(19, 24)
+        func mix(_ far: Double, _ close: Double) -> Double { far + (close - far) * k }
+        let tip = mix(36, 27), tail = mix(-33, -23), shaft = mix(3.8, 12.5), wing = mix(12, 26), neck = tip - mix(20, 25)
+        let thick = mix(8, 14)
+        let tilt = 50.0 * .pi / 180, eye = 190.0, a = angle * .pi / 180, ground = CGPoint(x: c.x, y: c.y + 5)
+        /// Ground-plane point (x right, y forward of the arrow, z up) to the screen.
+        func project(_ x: Double, _ y: Double, _ z: Double) -> CGPoint {
+            let rx = x * cos(a) + y * sin(a), ry = -x * sin(a) + y * cos(a)
+            let scale = eye / (eye + ry * sin(tilt) - z * cos(tilt))
+            return CGPoint(x: ground.x + CGFloat(rx * scale), y: ground.y - CGFloat((ry * cos(tilt) + z * sin(tilt)) * scale))
+        }
         ctx.saveGState()
         ctx.addEllipse(in: CGRect(x: c.x - r + 6, y: c.y - r + 6, width: 2 * r - 12, height: 2 * r - 12))
         ctx.clip()
@@ -491,39 +501,88 @@ final class Hud {
             ctx.setFillColor(heatColor(near, 0.2 * near, shade: 0.8))
             ctx.fill(CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r))
         }
+        ctx.setStrokeColor(rgb(255, 255, 255, 0.13))          // the ground: rings lying flat on the tilted plane
+        ctx.setLineWidth(1.3)
+        for radius in [16.0, 31.0, 46.0, 61.0] {
+            let rings = CGMutablePath()
+            rings.addLines(between: (0...40).map { i -> CGPoint in
+                let t = Double(i) / 40 * 2 * .pi, x = radius * cos(t), y = radius * sin(t), scale = eye / (eye + y * sin(tilt))
+                return CGPoint(x: ground.x + CGFloat(x * scale), y: ground.y - CGFloat(y * cos(tilt) * scale))
+            })
+            ctx.addPath(rings)
+            ctx.strokePath()
+        }
         ctx.restoreGState()
+
+        let plan: [(Double, Double)] = [(0, tip), (wing, neck), (shaft, neck), (shaft, tail), (-shaft, tail), (-shaft, neck), (-wing, neck)]
+        func polygon(_ points: [CGPoint]) -> CGPath {
+            let path = CGMutablePath()
+            path.addLines(between: points)
+            path.closeSubpath()
+            return path
+        }
+        let top = polygon(plan.map { project($0.0, $0.1, thick) })
+        // Side walls that face the viewer, farthest first. `light` is brighter for walls turned to the left.
+        var walls: [(depth: Double, light: Double, path: CGPath)] = []
+        for i in 0..<plan.count {
+            let p = plan[i], q = plan[(i + 1) % plan.count]
+            let dx = q.0 - p.0, dy = q.1 - p.1, length = max(hypot(dx, dy), 0.001)
+            let nx = (dy * cos(a) + dx * sin(a)) / length, ny = (-dy * sin(a) - dx * cos(a)) / length   // outward normal, turned
+            if ny >= 0 { continue }
+            let depth = (-(p.0 + q.0) * sin(a) + (p.1 + q.1) * cos(a)) / 2
+            walls.append((depth, 0.46 - 0.16 * nx, polygon([project(p.0, p.1, thick), project(q.0, q.1, thick), project(q.0, q.1, 0), project(p.0, p.1, 0)])))
+        }
+        walls.sort { $0.depth > $1.depth }
+        let body = CGMutablePath()
+        body.addPath(top)
+        for wall in walls { body.addPath(wall.path) }
         ctx.saveGState()
-        ctx.translateBy(x: c.x, y: c.y)
-        ctx.rotate(by: CGFloat(angle * .pi / 180))
-        let outline = CGMutablePath()
-        outline.addLines(between: [CGPoint(x: 0, y: tip), CGPoint(x: wing, y: neck), CGPoint(x: shaft, y: neck), CGPoint(x: shaft, y: tail),
-                                   CGPoint(x: -shaft, y: tail), CGPoint(x: -shaft, y: neck), CGPoint(x: -wing, y: neck)])
-        outline.closeSubpath()
         ctx.setLineJoin(.round)
+        ctx.saveGState()                                      // soft shadow on the ground
+        ctx.translateBy(x: 3, y: 4)
+        ctx.setShadow(offset: .zero, blur: 4 * unit, color: rgb(0, 0, 0, 0.6))
+        ctx.addPath(polygon(plan.map { project($0.0, $0.1, 0) }))
+        ctx.setFillColor(rgb(0, 0, 0, 0.45))
+        ctx.fillPath()
+        ctx.restoreGState()
         for pass in 0..<(near > 0.5 ? 2 : 1) {                // the glow: wider, hotter and doubled up close
             ctx.saveGState()
             let blur = pass == 0 ? 6 + 20 * near * (0.7 + 0.3 * throb) : 5
             ctx.setShadow(offset: .zero, blur: CGFloat(blur) * unit,
                           color: near > 0.05 ? heatColor(near, 0.75 + 0.25 * near, flash: pass == 0 ? 0 : 0.6)
                               : onCourse ? rgb(255, 240, 150, 0.95) : rgb(255, 170, 30, 0.7))
-            ctx.addPath(outline)
+            ctx.addPath(body)
             ctx.setFillColor(ink)
             ctx.setStrokeColor(ink)
             ctx.setLineWidth(3.6)
             ctx.drawPath(using: .fillStroke)
             ctx.restoreGState()
         }
-        ctx.addPath(outline)
-        ctx.clip()
-        let lift = max(near, onCourse ? 0.6 : 0)              // brighter when on course and when close
-        ctx.setFillColor(rgb(255, 226 + 24 * lift, 110 + 104 * lift))
-        ctx.fill(CGRect(x: -30, y: -40, width: 30, height: 80))
-        ctx.setFillColor(rgb(248 + 7 * lift, 176 + 50 * lift, 40 + 80 * lift))
-        ctx.fill(CGRect(x: 0, y: -40, width: 30, height: 80))
-        if near > 0.3 {
-            ctx.setFillColor(rgb(255, 255, 255, 0.45 * (near - 0.3) / 0.7 * throb))
-            ctx.fill(CGRect(x: -30, y: -40, width: 60, height: 80))
+        for wall in walls {                                   // walls: deep gold far away, ember red up close
+            ctx.addPath(wall.path)
+            ctx.setFillColor(heatColor(max(near, 0.3), shade: wall.light * (0.8 + 0.2 * near)))
+            ctx.fillPath()
+            ctx.addPath(wall.path)
+            ctx.setStrokeColor(rgb(22, 12, 4, 0.55))
+            ctx.setLineWidth(0.8)
+            ctx.strokePath()
         }
+        let lift = max(near, onCourse ? 0.6 : 0)              // top face: brighter when on course and when close
+        ctx.addPath(top)
+        ctx.setFillColor(rgb(255, 230 + 20 * lift, 120 + 94 * lift))
+        ctx.fillPath()
+        ctx.addPath(polygon([(0, tip), (wing, neck), (shaft, neck), (shaft, tail), (0, tail)].map { project($0.0, $0.1, thick) }))
+        ctx.setFillColor(rgb(250 + 5 * lift, 190 + 40 * lift, 52 + 80 * lift))
+        ctx.fillPath()
+        if near > 0.3 {
+            ctx.addPath(top)
+            ctx.setFillColor(rgb(255, 255, 255, 0.45 * (near - 0.3) / 0.7 * throb))
+            ctx.fillPath()
+        }
+        ctx.addPath(top)
+        ctx.setStrokeColor(rgb(255, 252, 230, 0.9))           // bright rim on the top face's edge
+        ctx.setLineWidth(0.9)
+        ctx.strokePath()
         ctx.restoreGState()
     }
 
