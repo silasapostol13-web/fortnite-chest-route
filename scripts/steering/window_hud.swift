@@ -393,6 +393,21 @@ final class Hud {
                 ctx.fillPath()
             }
         }
+        if near > 0.3 && !search && !scanning {       // every style: a gold halo that brightens and throbs faster when close
+            let heat = (near - 0.3) / 0.7
+            let halo = r + 3 + CGFloat(5 * heat * abs(sin(beat * .pi)))
+            ctx.saveGState()
+            ctx.setShadow(offset: .zero, blur: CGFloat(8 + 14 * heat) * unit, color: rgb(255, 214, 70, 0.95))
+            ctx.setFillColor(rgb(255, 226, 110, 0.35 + 0.6 * heat))
+            ctx.fillEllipse(in: CGRect(x: c.x - halo, y: c.y - halo, width: 2 * halo, height: 2 * halo))
+            ctx.restoreGState()
+        }
+        if style == "ribbon" && near > 0 && near < 1 && !search && !scanning {   // ribbon: a ring closing in on the dial
+            let ring = r + CGFloat(20 * (1 - near))
+            ctx.setStrokeColor(rgb(255, 240, 170, 0.35 + 0.6 * near))
+            ctx.setLineWidth(CGFloat(1.5 + 2.5 * near))
+            ctx.strokeEllipse(in: CGRect(x: c.x - ring, y: c.y - ring, width: 2 * ring, height: 2 * ring))
+        }
         ctx.saveGState()
         ctx.setShadow(offset: CGSize(width: 0, height: -3 * unit), blur: 9 * unit, color: rgb(0, 0, 0, 0.6))
         ctx.setFillColor(rgb(8, 13, 30, 0.94))
@@ -426,7 +441,7 @@ final class Hud {
         let g = CGGradient(colorsSpace: space, colors: [goldHi, gold, goldLo] as CFArray, locations: nil)!
         let charging = style == "ribbon" && !search && !scanning
         if charging {                                 // closeness: the rim fills clockwise from the top
-            ctx.setFillColor(rgb(112, 72, 20))
+            ctx.setFillColor(rgb(70, 46, 16))
             ctx.fill(CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r))
             let wedge = CGMutablePath()
             wedge.move(to: c)

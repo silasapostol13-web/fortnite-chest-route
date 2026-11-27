@@ -247,9 +247,11 @@ Pieces, all in a 1280x720 design space scaled to the gameplay rectangle:
   Dijkstra path from the player's point of view, so it bends where the path
   bends; `arrow` is one straight gold arrow to the next waypoint; `cutlass` is
   a sword needle. Height is not shown: the map data has none.
-- Closeness: the distance counts down, grows and turns white inside 20 m. Each
-  style adds its own cue from 60 m in: `ribbon` fills the dial rim clockwise,
-  `arrow` fills from tail to tip, `cutlass` sends pings that speed up. At 5 m
+- Closeness: the distance counts down, grows and turns white inside 20 m. From
+  about 44 m in, a gold halo around the dial brightens and throbs faster. Each
+  style adds its own cue from 60 m in: `ribbon` fills the dial rim clockwise
+  while a ring closes in on the dial, `arrow` fills from tail to tip,
+  `cutlass` sends pings that speed up. At 5 m
   every style switches to the token and `DIG HERE!`.
 - Compass pin: a token under the strip at the chest's straight-line bearing.
   Measured on `gameplay.mp4`: N, NE, E, SE labels sit 106.9 px apart at 1280
@@ -299,7 +301,9 @@ three moments) and `closeness.png` (each style at 40, 15 and 6 m).
   the HUD still showed 29 to 70 m to its active chest.
 - Two fresh viewers judged frames and the clip. The first misread the old
   dart-shaped arrow as disagreeing with the turn wording; the arrow now has a
-  head and shaft. The second found nothing serious.
+  head and shaft. The second and third found nothing serious. The third said
+  closeness only showed in the number; the halo and closing ring were added
+  after that and have not been in front of a viewer.
 - Not verified: the live panel on screen over PS Remote Play (placement on the
   gameplay rectangle, 60 Hz redraw cost, the hot keys). The live binary was
   only fed snapshots with no matching window and exited cleanly.
