@@ -69,7 +69,7 @@ first stop of the newest plan. Use `--route film --chest N` for the old fixed li
 - Standing within 6 m of any other regular or guaranteed spot for 1.5 s counts it as checked. Buried spots
   only count when they're the target (walking over one proves nothing).
 - The target only switches when the new plan opens one more chest or saves 4 s, at most once per 3 s.
-- New HUD snapshot fields: `planned` (chests in the current plan), `replanned` (shows ROUTE UPDATED),
+- New HUD snapshot fields: `planned` (chests in the current plan), `replanned` (snaps the metres),
   `ahead` ([turn°, metres] at 12/30/50 m down the path). `chest` = chests opened + 1, `total` = opened +
   planned. All old fields unchanged.
 
@@ -83,6 +83,21 @@ What this doesn't prove: in this clip he was playing without the overlay, so the
 the other way round. Whether following the arrow opens more chests needs a real run over Remote Play. Fixed
 along the way: holding the current target used to collapse the plan to that one chest (`ils_best` dropped
 every candidate when the player's other edges were masked); it now plans onward from the held chest.
+
+## Full-map route prototype (`--route tour`, 2026-11-27, NOT the default)
+
+`tour.py`: one open travelling-salesman path through all 1,006 spots (nearest-first, then 2-opt + Or-opt in numpy,
+0.56-0.9 s), followed like a maps app: reroute only when >25 m off the leg path for 3 s, or a chest >50 m from it gets
+dealt; a chest within 10 m that costs at most 6 s extra is slotted in first (`nearby` snapshot field, HUD "CHEST
+NEARBY"); `rerouting` snapshot field shows the REROUTING card. `compare_planners.py` measures it against `replan.py`
+(`replay` on real traces, `drift` = standing between two chests 25-50 m apart, `sim` = a simulated follower):
+- Drift, 120 pairs: old planner changed chest in 51% (107 changes), tour 9% (14). (Before the nearby rule.)
+- Replay, 7.5 min of his real movement (he followed no arrow): old 19 changes, 4 while he moved under 5 m, 15
+  chests within 8 m ignored; tour 8 changes, 0 while still, 1 ignored (19 s detour), 5 reroutes, each after 68-132 m
+  of movement in 10 s; 0 on the live-test trace. `out/steering/planner-compare-replay.json`.
+- Sim, 10 min from 5 starts: old 99 chests (103 with 20% wandering), tour 90 (87). The tour must visit every
+  outlier, so it opens ~10% fewer. Hence the next step: keep orienteering, freeze it maps-app style.
+- MST lower bound: the tour is at most 19% longer than optimal (literature: 2-opt ~5% typical at 1,000 points).
 
 ## Arrow accuracy (measured 2026-11-27, test feed)
 
@@ -312,7 +327,7 @@ Snapshot fields added to the HUD protocol, all optional (the first protocol's
 `opened`, `kind`, `heading`, `bearing`, `player`, `target`, `path`, `mini`,
 `compass`, `game`, `mpu`, `scale`, `style`, `t`, and `ahead` (`[turn, metres]`
 points down the path; worked out from `path` when absent) and `replanned`
-(shows `ROUTE UPDATED` for 2 s). `ahead` and `replanned` are read leniently: an
+(the old ROUTE UPDATED label is gone; `rerouting` shows the REROUTING card). `ahead` and `replanned` are read leniently: an
 unexpected shape is treated as absent.
 
 Check the look without a console:

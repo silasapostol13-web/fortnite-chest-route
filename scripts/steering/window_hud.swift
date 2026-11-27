@@ -34,6 +34,8 @@ struct Snapshot: Decodable {
     let game: [Double]?       // gameplay rectangle inside the window, as fractions: x, y, w, h
     let ahead: Soft<[[Double]]>?   // old snapshots send this; not drawn any more
     let replanned: Soft<Bool>?     // true on the frame the chest order changed
+    let rerouting: Soft<Bool>?     // true for a moment after he left the route and a new one was planned
+    let nearby: Soft<Bool>?        // the next stop is a chest he's right next to, slotted in ahead of the route
     let style: String?        // old snapshots send this; there is one arrow now, so it is ignored
     let mpu: Double?          // metres per map unit
     let scale: Double?        // card size, 1 = default; grows down from under the compass
@@ -71,7 +73,8 @@ final class Hud {
     var done = false, primed = false
     var angle = 0.0, pinAngle = 0.0, px = 0.0, py = 0.0
     var chest = -1, opened = -1, kind = ""
-    var popAt = -1e9, slideAt = -1e9, replanAt = -1e9
+    var popAt = -1e9, slideAt = -1e9, rerouteAt = -1e9
+    var wasRerouting = false               // the snapshot before this one had `rerouting`; the moment starts on the rising edge
     var shownMeters = -1.0                 // the distance on the card: eased towards each fix, held while tracking is lost
     var snapMeters = true                  // jump straight to the next fix (new chest, new target or a re-plan)
     var aim: [Double] = []                 // the chest position the distance belongs to
@@ -90,7 +93,10 @@ final class Hud {
             if let o = s.opened, opened >= 0, o > opened { popAt = now }
             if s.chest != chest { slideAt = now; legStart = 0; snapMeters = true }
         }
-        if s.replanned?.value == true { replanAt = now; snapMeters = true }
+        if s.replanned?.value == true { snapMeters = true }
+        let rerouting = s.rerouting?.value == true
+        if rerouting && !wasRerouting { rerouteAt = now; snapMeters = true; legStart = 0 }
+        wasRerouting = rerouting
         if live, let target = s.target, target.count == 2 {
             if aim.count == 2 && hypot(target[0] - aim[0], target[1] - aim[1]) > 1 { snapMeters = true; legStart = 0 }
             aim = target
@@ -227,7 +233,7 @@ final class Hud {
         if snapMeters || shownMeters < 0 { shownMeters = fix; snapMeters = false }
         else { shownMeters += (fix - shownMeters) * (1 - exp(-dt / 0.3)) }
         let meters = Int(shownMeters.rounded())
-        let search = live && meters <= 5
+        let search = live && meters <= 5 && !(now >= rerouteAt && now < rerouteAt + 2.4)   // never DIG HERE over the reroute word
 
         // Smooth the needle, the compass pin and the minimap position between snapshots.
         let pinTarget = wrap((s.bearing ?? 0) - (s.heading ?? 0))
@@ -246,12 +252,21 @@ final class Hud {
 
         let pop = now - popAt                      // seconds since a chest was opened
         let popping = pop >= 0 && pop < 1.3
-        near = (live || scanning) && !search ? clamp((60 - shownMeters) / 54, 0, 1) : 0
+        // REROUTING moment: he left the route (or opened a chest that was off it) and a new route was planned.
+        // 1.3 s: the word, a turning route icon and a blue plate; then the arrow comes back under NEW ROUTE.
+        // After a chest pop it waits for CHEST OPENED! to finish and runs shorter.
+        let afterPop = rerouteAt >= popAt && rerouteAt < popAt + 1.05
+        let rerouteStart = afterPop ? popAt + 1.05 : rerouteAt
+        let rerouteEnd = rerouteStart + (afterPop ? 0.9 : 1.3)
+        let re = now - rerouteStart
+        let rerouting = live && !done && re >= 0 && now < rerouteEnd
+        let fresh = live && !rerouting && now >= rerouteEnd && now < rerouteEnd + 1.6   // the new route's first moments
+        near = (live || scanning) && !search && !rerouting ? clamp((60 - shownMeters) / 54, 0, 1) : 0
         beat += dt * (0.8 + 2.2 * near * near)       // 0.8 pulses a second far away, 3 a second at the chest
         throb = search ? abs(sin(now * 4)) : pow(abs(sin(beat * .pi)), 1.5)
         // Heat bar: how much of this leg is covered, measured from where the chest became the active one.
         if live { legStart = legStart == 0 ? clamp(shownMeters, 30, 90) : min(90, max(legStart, shownMeters)) }
-        let covered = done || search || popping ? 1 : live && legStart > 5 ? clamp((legStart - shownMeters) / (legStart - 5), 0, 1) : progress
+        let covered = rerouting ? 0 : done || search || popping ? 1 : live && legStart > 5 ? clamp((legStart - shownMeters) / (legStart - 5), 0, 1) : progress
         progress += (covered - progress) * (1 - exp(-dt / 0.15))
         let hot = search ? 1 : scanning ? 0.5 * near : near   // drives the card's edge glow
         func hotColor(_ a: Double, flash: Double = 0) -> CGColor {
@@ -263,15 +278,16 @@ final class Hud {
         ctx.scaleBy(x: unit, y: -unit)
         ctx.setAlpha(CGFloat(fade))
 
-        let slide = now - (popping ? popAt + 1.05 : slideAt)
+        let slide = now - (popping ? popAt + 1.05 : rerouting ? rerouteStart : max(slideAt, now >= rerouteEnd ? rerouteEnd : -1e9))
 
         if live && s.bearing != nil && s.heading != nil { compassPin(ctx, s, alpha: fade) }
-        if live && s.player != nil && s.target != nil { minimap(ctx, s) }
+        if live && s.player != nil && s.target != nil { minimap(ctx, s, drawn: rerouting || fresh ? ease(re / 0.8) : 1) }
 
         // Card: needle dial on the left, slanted plate on the right, centred under the compass.
         ctx.saveGState()
         let appear = ease((now - shownAt) / 0.3)
         let bump = 0.92 + 0.08 * appear + (popping ? 0.07 * sin(.pi * clamp(pop / 0.3, 0, 1)) : 0)
+            + (rerouting ? 0.06 * sin(.pi * clamp(re / 0.3, 0, 1)) : 0) + (fresh ? 0.05 * sin(.pi * clamp((now - rerouteEnd) / 0.3, 0, 1)) : 0)
         let size = CGFloat(clamp(s.scale ?? 1, 0.6, 1.6))
         ctx.translateBy(x: 639, y: 62)
         ctx.scaleBy(x: size, y: size)
@@ -303,6 +319,31 @@ final class Hud {
             ctx.setFillColor(heatColor(near, 0.9 * flood, flash: 0.12 * near * throb, shade: 0.78))
             ctx.fillPath()
         }
+        if rerouting {                              // same navy plate, a touch darker so the word carries, with a pale-gold edge that breathes
+            let breath = 0.5 + 0.5 * sin(re * 2 * .pi / 0.65)
+            ctx.addPath(plate)
+            ctx.setFillColor(rgb(6, 12, 30, 0.28))
+            ctx.fillPath()
+            gradient(ctx, slab(476 + 9.5, 68, 786 + 9.5, 72, lean: 0.5), [goldHi, gold, goldLo], from: CGPoint(x: 476, y: 0), to: CGPoint(x: 796, y: 0))
+            ctx.saveGState()
+            ctx.setShadow(offset: .zero, blur: CGFloat(6 + 6 * breath) * unit, color: rgb(255, 226, 110, 0.75))
+            ctx.addPath(plate)
+            ctx.setStrokeColor(rgb(255, 236, 160, 0.55 + 0.4 * breath))
+            ctx.setLineWidth(2)
+            ctx.strokePath()
+            ctx.restoreGState()
+        }
+        let flashAt = rerouting ? re : fresh ? now - rerouteEnd : 9
+        if flashAt < 0.5 {                          // a light sweep as the moment starts, and again as the new route lands
+            ctx.saveGState()
+            ctx.addPath(plate)
+            ctx.clip()
+            let sweep = CGFloat(476 + 390 * clamp(flashAt / 0.4, 0, 1))
+            ctx.setFillColor(rgb(255, 226, 110, 0.55 * (1 - clamp(flashAt / 0.5, 0, 1))))
+            ctx.addPath(slab(sweep - 150, 68, sweep, 157, lean: 26))
+            ctx.fillPath()
+            ctx.restoreGState()
+        }
         if popping {                                // gold flash across the plate
             ctx.saveGState()
             ctx.addPath(plate)
@@ -314,7 +355,7 @@ final class Hud {
             ctx.restoreGState()
         }
         ctx.addPath(plate)
-        ctx.setStrokeColor(hot > 0.02 && !popping ? hotColor(0.35 + 0.65 * hot, flash: 0.5 * hot * throb) : rgb(255, 255, 255, 0.16))
+        ctx.setStrokeColor(rerouting ? rgb(255, 236, 160, 0.9) : hot > 0.02 && !popping ? hotColor(0.35 + 0.65 * hot, flash: 0.5 * hot * throb) : rgb(255, 255, 255, 0.16))
         ctx.setLineWidth(CGFloat(1 + 2 * hot))
         ctx.strokePath()
 
@@ -328,14 +369,27 @@ final class Hud {
             text(ctx, "ROUTE COMPLETE", display, 31, x: 550, y: 126, color: goldHi, outline: 2, shear: 0.12)
         } else if announcing {
             text(ctx, "CHEST OPENED!", display, 27, x: 550, y: 126, color: goldHi, outline: 2, shear: 0.12)
+        } else if rerouting {                       // one word, as big as the plate allows, with three dots counting up
+            ctx.saveGState()                        // slides in at full strength: no fade, so every frame of it is crisp
+            let w = text(ctx, "REROUTING", display, 34, x: 548 + enter, y: 125.5, color: white, outline: 2.4, shear: 0.12)
+            for i in 0..<3 {                        // always three, one lit at a time, so any single frame looks finished
+                let lit = Int(re / 0.2) % 3 == i
+                let c = CGPoint(x: 548 + enter + w + 8 + CGFloat(i) * 10.5, y: 121.8)
+                ctx.setFillColor(rgb(8, 10, 24, 0.95))
+                ctx.fillEllipse(in: CGRect(x: c.x - 5, y: c.y - 5, width: 10, height: 10))
+                ctx.setFillColor(lit ? white : rgb(255, 255, 255, 0.45))
+                ctx.fillEllipse(in: CGRect(x: c.x - 3.2, y: c.y - 3.2, width: 6.4, height: 6.4))
+            }
+            ctx.restoreGState()
         } else {
             ctx.saveGState()
             ctx.setAlpha(CGFloat(fade) * (1 - enter / 16))
+            let nearbyChest = s.nearby?.value == true
             if scanning {
                 text(ctx, "FINDING SIGNAL", display, 22, x: 550, y: 123, color: rgb(190, 204, 232), outline: 2, shear: 0.12)
             } else {
-                text(ctx, search ? (kind == "buried" ? "DIG HERE!" : "OPEN IT!") : "NEXT CHEST", display, search ? 31 : 25, x: 550 + enter,
-                     y: search ? 126 : 123, color: search ? goldHi : white, outline: 2, shear: 0.12)
+                text(ctx, search ? (kind == "buried" ? "DIG HERE!" : "OPEN IT!") : fresh ? "NEW ROUTE" : nearbyChest ? "CHEST NEARBY" : "NEXT CHEST", display, search ? 31 : 25, x: 550 + enter,
+                     y: search ? 126 : 123, color: search || fresh || nearbyChest ? goldHi : white, outline: 2, shear: 0.12)
             }
             if !search {
                 if scanning { ctx.setAlpha(CGFloat(fade) * 0.5) }
@@ -349,19 +403,14 @@ final class Hud {
             ctx.restoreGState()
         }
 
-        // Bottom row: what to do, and how the route was found.
+        // Bottom row: what to do.
         let side = angle > 0 ? "RIGHT" : "LEFT"
-        let action = done ? "EVERY CHEST CHECKED" : announcing ? "ON TO THE NEXT ONE" : scanning ? "READING COMPASS + MINIMAP"
+        let action = done ? "EVERY CHEST CHECKED" : announcing ? "ON TO THE NEXT ONE" : rerouting ? "OFF ROUTE  ·  FINDING A NEW ROUTE" : scanning ? "READING COMPASS + MINIMAP"
             : search ? "X MARKS THE SPOT"
             : abs(angle) < 15 ? "STRAIGHT AHEAD" : abs(angle) > 135 ? "BEHIND YOU  ·  TURN \(side)"
             : abs(angle) < 45 ? "SLIGHT \(side)" : "TURN \(side)"
-        text(ctx, action, label, 15, x: 550, y: 141.5, color: abs(angle) < 15 && live && !search ? goldHi : rgb(236, 240, 252),
-             outline: 1.1, kern: 0.7)
-        if !search && !scanning && !done && abs(angle) <= 135 && !announcing {
-            let rerouted = now - replanAt < 2
-            text(ctx, rerouted ? "ROUTE UPDATED" : "DIJKSTRA ROUTE", label, 9.5, x: 787, y: 140.5, align: 1,
-                 color: rerouted ? goldHi : rgb(150, 172, 220), outline: 0.9, kern: 0.6)
-        }
+        text(ctx, action, label, rerouting ? 12.6 : 15, x: 550, y: rerouting ? 142 : 141.5,
+             color: abs(angle) < 15 && live && !search && !rerouting ? goldHi : rgb(236, 240, 252), outline: 1.1, kern: 0.7)
 
         // Heat bar: fills towards the token as this leg is covered, gold at the start and hot orange at the end.
         let segments = 14
@@ -381,12 +430,13 @@ final class Hud {
         }
         coin(ctx, CGPoint(x: 778.5, y: 150), 6.5 + (progress > 0.9 ? 1.2 * throb : 0), skull: false)
 
-        dial(ctx, CGPoint(x: 492, y: 111), search: search || done, scanning: scanning, now: now, pop: popping ? pop : nil)
+        dial(ctx, CGPoint(x: 492, y: 111), search: search || done, scanning: scanning, now: now, pop: popping ? pop : nil,
+             reroute: rerouting ? re : nil)
         ctx.restoreGState()
         ctx.restoreGState()
     }
 
-    func dial(_ ctx: CGContext, _ c: CGPoint, search: Bool, scanning: Bool, now: Double, pop: Double?) {
+    func dial(_ ctx: CGContext, _ c: CGPoint, search: Bool, scanning: Bool, now: Double, pop: Double?, reroute: Double? = nil) {
         let r: CGFloat = 46
         if let pop {                                 // ring and sparks when a chest is opened
             let p = clamp(pop / 0.7, 0, 1)
@@ -424,7 +474,7 @@ final class Hud {
         gradient(ctx, face, [rgb(28, 46, 96, 0.9), rgb(12, 16, 40, 0.9)], from: CGPoint(x: c.x, y: c.y - r), to: CGPoint(x: c.x, y: c.y + r))
         // Compass rose (only when no arrow is shown; the arrow lies on its own tilted ground) and hour ticks.
         ctx.setFillColor(rgb(255, 255, 255, 0.07))
-        for i in 0..<4 where search || scanning {
+        for i in 0..<4 where search || scanning || reroute != nil {
             let a = Double(i) * .pi / 2
             let tip = CGPoint(x: c.x + CGFloat(sin(a)) * 34, y: c.y - CGFloat(cos(a)) * 34)
             let left = CGPoint(x: c.x + CGFloat(sin(a - 1.2)) * 8, y: c.y - CGFloat(cos(a - 1.2)) * 8)
@@ -458,6 +508,34 @@ final class Hud {
         ctx.closePath()
         ctx.drawPath(using: .fillStroke)
 
+        if let reroute {                              // two arrows chasing each other round: a new route is being worked out
+            let spin = reroute * 4.2 + 0.5, radius = 21.0, sweep = 2.15
+            ctx.saveGState()
+            ctx.setLineCap(.round)
+            ctx.setLineJoin(.round)
+            for (stroke, extra) in [(ink, 4.4), (goldHi, 0.0)] {
+                ctx.saveGState()
+                if extra > 0 { ctx.setShadow(offset: .zero, blur: 7 * unit, color: rgb(255, 200, 60, 0.9)) }
+                for half in 0..<2 {
+                    let a0 = spin + Double(half) * .pi, a1 = a0 + sweep
+                    ctx.addArc(center: c, radius: CGFloat(radius), startAngle: CGFloat(a0), endAngle: CGFloat(a1), clockwise: false)
+                    ctx.setStrokeColor(stroke)
+                    ctx.setLineWidth(CGFloat(7.5 + extra))
+                    ctx.strokePath()
+                    // Arrow head at the leading end, pointing along the turn.
+                    let tipA = a1 + 0.62, head = 11.5 + extra * 0.55
+                    let tip = CGPoint(x: c.x + CGFloat(cos(tipA) * radius), y: c.y + CGFloat(sin(tipA) * radius))
+                    let inner = CGPoint(x: c.x + CGFloat(cos(a1) * (radius - head)), y: c.y + CGFloat(sin(a1) * (radius - head)))
+                    let outer = CGPoint(x: c.x + CGFloat(cos(a1) * (radius + head)), y: c.y + CGFloat(sin(a1) * (radius + head)))
+                    ctx.move(to: tip); ctx.addLine(to: inner); ctx.addLine(to: outer); ctx.closePath()
+                    ctx.setFillColor(stroke)
+                    ctx.fillPath()
+                }
+                ctx.restoreGState()
+            }
+            ctx.restoreGState()
+            return
+        }
         if search {
             let pulse = CGFloat(abs(sin(now * 4)))
             ctx.setStrokeColor(rgb(255, 226, 110, 0.35 + 0.5 * Double(pulse)))
@@ -615,8 +693,9 @@ final class Hud {
         ctx.restoreGState()
     }
 
-    /// The Dijkstra path and the chest on the game's minimap (north-up, player in the middle).
-    func minimap(_ ctx: CGContext, _ s: Snapshot) {
+    /// The route to the chest and the chest on the game's minimap (north-up, player in the middle).
+    /// `drawn` under 1 shows only that share of the line from the player out: a new route draws itself on.
+    func minimap(_ ctx: CGContext, _ s: Snapshot, drawn: Double = 1) {
         let cal = (s.mini ?? [1760, 157, 1.3791, 1638, 36, 1886, 276]).map { $0 / 1.5 }
         guard cal.count == 7, let target = s.target, target.count == 2 else { return }
         let scale = cal[2]
@@ -627,11 +706,23 @@ final class Hud {
         let me = CGPoint(x: cal[0], y: cal[1])
         ctx.saveGState()
         ctx.clip(to: box)
-        let points = ((s.path ?? []).filter { $0.count == 2 }.map(place) + [place(target)]).filter { hypot($0.x - me.x, $0.y - me.y) > 9 }
+        var points = ((s.path ?? []).filter { $0.count == 2 }.map(place) + [place(target)]).filter { hypot($0.x - me.x, $0.y - me.y) > 9 }
         if points.count > 0 {
             let first = points[0]
             let d = hypot(first.x - me.x, first.y - me.y)
             let start = CGPoint(x: me.x + (first.x - me.x) * 9 / d, y: me.y + (first.y - me.y) * 9 / d)
+            if drawn < 1 {                            // cut the line at `drawn` of its length
+                let all = [start] + points
+                var left = zip(all, all.dropFirst()).reduce(0.0) { $0 + Double(hypot($1.1.x - $1.0.x, $1.1.y - $1.0.y)) } * max(drawn, 0)
+                points = []
+                for (p, q) in zip(all, all.dropFirst()) {
+                    let length = Double(hypot(q.x - p.x, q.y - p.y))
+                    if length <= left { points.append(q); left -= length; continue }
+                    let k = CGFloat(left / max(length, 0.001))
+                    points.append(CGPoint(x: p.x + (q.x - p.x) * k, y: p.y + (q.y - p.y) * k))
+                    break
+                }
+            }
             for (color, width) in [(rgb(30, 14, 0, 0.85), CGFloat(5)), (goldHi, CGFloat(2.6))] {
                 ctx.setStrokeColor(color)
                 ctx.setLineWidth(width)
@@ -650,7 +741,7 @@ final class Hud {
                         dy == 0 ? 1e9 : (dy > 0 ? inner.maxY - me.y : me.y - inner.minY) / abs(dy))
             pin = CGPoint(x: me.x + dx * k, y: me.y + dy * k)
         }
-        coin(ctx, pin, 7, skull: false)
+        if drawn >= 0.95 { coin(ctx, pin, 7, skull: false) }
     }
 }
 

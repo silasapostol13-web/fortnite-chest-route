@@ -305,10 +305,16 @@ class LiveRoute:
     need digging, so walking over one proves nothing). Back restores the
     last spot dealt with and keeps it first until it is dealt with again."""
 
-    def __init__(self, terrain, budget, pass_meters=6.0, pass_seconds=1.5):
+    def __init__(self, terrain, budget, pass_meters=6.0, pass_seconds=1.5, tour=False, off_meters=25.0):
         from replan import LivePlanner, Planner
         self.planner = Planner(terrain, budget=budget)
-        self.worker = LivePlanner(self.planner)
+        if tour:      # one route through every chest spot, rerouted only when he leaves it (tour.py)
+            from tour import TourPlanner, TourWorker
+            self.tour = TourPlanner(self.planner, terrain, off_meters=off_meters)
+            self.worker = TourWorker(self.tour)
+        else:         # the most chests in the next ``budget`` seconds, re-planned every second (replan.py)
+            self.tour = None
+            self.worker = LivePlanner(self.planner)
         self.xy = self.planner.xy
         self.plan, self.history, self.visited = [], [], set()
         self.opened = 0
@@ -329,8 +335,11 @@ class LiveRoute:
         return self.planner.kinds[self.plan[0]] if self.plan else ""
 
     def fields(self):
-        return {"chest": self.opened + 1, "total": self.opened + len(self.plan), "opened": self.opened,
-                "planned": len(self.plan)}
+        fields = {"chest": self.opened + 1, "total": self.opened + len(self.plan), "opened": self.opened,
+                  "planned": len(self.plan)}
+        if self.tour is not None and self.plan and self.plan[0] == self.tour.detour:
+            fields["nearby"] = True     # the next stop is a chest he's right next to, slotted in ahead of the route
+        return fields
 
     def _deal(self, spot, opened):
         self.visited.add(spot)
@@ -375,12 +384,14 @@ class LiveRoute:
         sequence, result = self.worker.latest()
         if sequence != self.sequence and result is not None:
             self.sequence = sequence
-            order, _, _, solve_ms, _ = result
+            order, _, rerouted, solve_ms, _ = result
             order = [s for s in order if s not in self.visited]
             if self.pin is not None:
                 order = [self.pin] + [s for s in order if s != self.pin]
-            if order and self.plan and order[0] != self.plan[0]:
+            if order and self.plan and order[0] != self.plan[0] and (rerouted or self.plan[0] not in self.visited):
                 events["replanned"] = True
+            if rerouted and self.plan:
+                events["rerouted"] = True       # the whole route was re-solved (tour: he left the route)
             self.plan = order
             events["plan_ms"] = round(solve_ms, 1)
         return events
@@ -414,13 +425,15 @@ def path_ahead(player, yaw, path, marks=(12, 30, 50)):
     return points
 
 
-def hud_snapshot(route, player, yaw, waypoint, path, tracked, atlas_width, replanned=False):
+def hud_snapshot(route, player, yaw, waypoint, path, tracked, atlas_width, replanned=False, rerouting=False):
     """Everything the HUD draws for one moment. Old HUD builds only read chest, turn and meters."""
     target = route.target()
     snapshot = {**route.fields(), "tracked": bool(tracked), "done": route.done, "kind": route.kind(),
                 "mpu": params.METERS_PER_PX, **HUD_OPTIONS}
     if replanned:
         snapshot["replanned"] = True
+    if rerouting:                       # tour route: he left the route and it was re-solved (HUD shows REROUTING)
+        snapshot["rerouting"] = True
     if tracked and target is not None:
         _, turn, _ = steering(player, yaw, waypoint)
         direct, _, _ = steering(player, yaw, target)
@@ -452,7 +465,7 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
             raise SystemExit(f"Chest must be between 1 and {len(chests)}")
         route = FixedRoute(chests, film.get("types") or ["chest"] * len(chests), args.chest, args.opened)
     else:
-        route = LiveRoute(terrain, args.budget)
+        route = LiveRoute(terrain, args.budget, tour=args.route == "tour", off_meters=args.off_route_meters)
 
     marks = sorted((float(t), result) for t, result in args.mark)
     if window_helper is not None:
@@ -491,7 +504,7 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
         Thread(target=listen, daemon=True).start()
     near_since = last_reached = None
     feed = Feed(capture, paced)
-    replanned_until = float("-inf")
+    replanned_until = rerouting_until = float("-inf")
     sequence = -1
     player = yaw = waypoint = route_key = None
     last_yaw = last_pos = next_head = next_pos = float("-inf")
@@ -560,6 +573,9 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
             if events.get("replanned"):
                 replanned_until = media_time + .3
                 near_since = None
+            if events.get("rerouted"):
+                rerouting_until = media_time + 1.5
+                print("Rerouting: left the route; new order from here.", flush=True)
             target = route.target()
             route_ms = 0.0
             if player is not None and target is not None and arrived - last_pos < .85:
@@ -581,7 +597,7 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
                 else:
                     near_since = None
             state = hud_snapshot(route, player, yaw, waypoint, path, tracked, atlas.shape[1],
-                                 replanned=media_time < replanned_until)
+                                 replanned=media_time < replanned_until, rerouting=media_time < rerouting_until)
             image = overlay(frame, renderer, {**state, "t": media_time}) if renderer else None
             latency_ms = (monotonic() - arrived) * 1000
             if tracked and not reported_lock:
@@ -606,7 +622,7 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
                     sample["mark"] = result
                 if isinstance(route, LiveRoute):
                     sample.update({"spot": route.key, "planned": len(route.plan), "opened": route.opened})
-                    for name in ("plan_ms", "replanned", "passed"):
+                    for name in ("plan_ms", "replanned", "rerouted", "passed"):
                         if name in events:
                             sample[name] = events[name]
                 if tracked:
@@ -668,8 +684,12 @@ def main():
                         metavar="W:H:X:Y", help="Gameplay rectangle in the 1920px-wide captured window")
     parser.add_argument("--start", type=float, default=0)
     parser.add_argument("--duration", type=float)
-    parser.add_argument("--route", choices=("live", "film"), default="live",
-                        help="live: re-plan over every chest spot from where you are (default); film: the fixed 33-chest list")
+    parser.add_argument("--route", choices=("tour", "live", "film"), default="live",
+                        help="tour (prototype): one route through every chest spot, rerouted only when you leave "
+                             "it; live (default): re-plan the most chests in the next --budget seconds every second; "
+                             "film: the fixed 33-chest list")
+    parser.add_argument("--off-route-meters", type=float, default=25,
+                        help="Tour route: re-plan when you're this far from the planned path for 3 s")
     parser.add_argument("--budget", type=float, default=120,
                         help="Live route: plan the most chests reachable in this many seconds")
     parser.add_argument("--chest", type=int, default=19, help="Film route: first active chest number")
