@@ -17,6 +17,7 @@ chests or saves real time, so the arrow doesn't flip between two equal choices.
 
 from __future__ import annotations
 
+import csv
 import hashlib
 from math import dist
 from pathlib import Path
@@ -34,6 +35,20 @@ from route.orienteering import ils_best, route_time  # noqa: E402
 from route.travel import cell_of, compute_travel_matrix, dijkstra_within  # noqa: E402
 
 CACHE_DIR = ROOT / "data" / "cache"
+SPOT_TYPES = ("regular", "guaranteed", "guaranteed_rare", "buried")
+
+
+def load_spots(types=SPOT_TYPES):
+    """Every chest spot of the given types: (xy, kinds). Buried chests are included because the film
+    route is mostly buried treasure; ``planner_source.load_spawns`` keeps only regular and guaranteed."""
+    width, height = planner_source.MAP_SIZE
+    by_position = {}
+    with (planner_source.PLANNER_DIR / "chest_spawns.csv").open(newline="", encoding="utf-8") as file:
+        for row in csv.DictReader(file):
+            if row["type"] in types:
+                xy = float(row["x_percent"]) * width / 100, float(row["y_percent"]) * height / 100
+                by_position.setdefault(xy, row["type"])
+    return np.array(list(by_position), dtype=float), list(by_position.values())
 
 
 def chest_matrix(terrain, xy):
@@ -57,8 +72,8 @@ class Planner:
     """Computes the best chest order from a position. Pure and synchronous."""
 
     def __init__(self, terrain, budget=120.0, pool=45, reach=75.0, iters=30,
-                 switch_seconds=4.0):
-        _, _, self.xy = planner_source.load_spawns()
+                 switch_seconds=4.0, spots=None):
+        self.xy, self.kinds = spots if spots is not None else load_spots()
         self.graph = terrain.graph
         self.cells = [cell_of(x, y) for x, y in self.xy]
         self.T = chest_matrix(terrain, self.xy)
@@ -82,13 +97,25 @@ class Planner:
         return np.minimum(direct, via)
 
     def _solve(self, times, cands, first=None):
+        """Best order over ``cands``. With ``first`` (an index into cands) that chest is forced to be stop one:
+        solve from the chest itself with the budget left after reaching it. (Masking the player's other
+        edges instead made ``ils_best`` drop every other candidate, since its pool needs a finite first leg.)"""
+        if first is not None:
+            current = cands[first]
+            rest = [c for c in cands if c != current]
+            left = self.budget - times[current]
+            if left < 0 or not rest:
+                return [current], float(times[current] + self.stop)
+            nodes = [current] + rest
+            M = self.T[np.ix_(nodes, nodes)].copy()
+            np.fill_diagonal(M, 0.0)
+            order, _ = ils_best(M, 0, list(range(1, len(nodes))), left + self.stop, self.stop,
+                                iters=self.iters, seed=0)
+            order = order or [0]
+            return [nodes[i] for i in order], float(times[current] + route_time(M, order, self.stop))
         n = len(cands)
         M = np.full((n + 1, n + 1), np.inf)
         M[0, 1:] = times[cands]
-        if first is not None:  # only allow the current target as the first stop
-            keep = M[0, 1:].copy()
-            M[0, 1:] = np.inf
-            M[0, 1 + first] = keep[first]
         M[1:, 1:] = self.T[np.ix_(cands, cands)]
         np.fill_diagonal(M, 0.0)
         # route_time counts a stop at node 0 (the player); add it back to the budget.
@@ -134,9 +161,10 @@ class LivePlanner:
         self.worker = threading.Thread(target=self._loop, daemon=True)
         self.worker.start()
 
-    def submit(self, player, visited, current, force=False):
+    def submit(self, player, visited, current, force=False, hold=False):
+        """Queue a re-plan from ``player``. ``hold`` keeps ``current`` first (the player asked for it)."""
         with self.lock:
-            self.request = (tuple(player), frozenset(visited), current, force)
+            self.request = (tuple(player), frozenset(visited), current, force, hold)
             self.lock.notify()
 
     def _loop(self):
@@ -148,10 +176,10 @@ class LivePlanner:
                     self.lock.wait(timeout=0.05)
                 if self.stopped:
                     return
-                player, visited, current, _ = self.request
+                player, visited, current, _, hold = self.request
                 self.request = None
             started = time.monotonic()
-            allow = time.monotonic() - self.last_switch >= self.hold
+            allow = not hold and time.monotonic() - self.last_switch >= self.hold
             order, seconds, switched = self.planner.plan(player, visited, current, allow_switch=allow)
             last = time.monotonic()
             if switched:

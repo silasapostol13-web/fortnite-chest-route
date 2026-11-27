@@ -40,6 +40,35 @@ cp scripts/steering/replay.html out/steering/index.html
 open out/steering/index.html
 ```
 
+## Live re-planning (default since 2026-11-27)
+
+`live.py` now plans over every chest spot on the map (1,006 spots: regular, guaranteed, rare and buried)
+instead of the fixed 33-chest film list. About once a second, in a background thread, it answers: from where
+he is right now, which unopened chests, in what order, open the most in the next `--budget` seconds (default
+120)? That is the orienteering problem (NP-hard); `route.orienteering.ils_best` (iterated local search)
+solves it on the same terrain graph and Dijkstra travel times the arrow uses. The arrow always points at the
+first stop of the newest plan. Use `--route film --chest N` for the old fixed list.
+
+- Reaching the active chest (within `--arrive-meters` for `--arrive-seconds`), F or Ctrl-Opt-N's skip
+  takes it off the plan; B / Ctrl-Opt-B restores the last one and keeps it first until it's dealt with.
+- Standing within 6 m of any other regular or guaranteed spot for 1.5 s counts it as checked. Buried spots
+  only count when they're the target (walking over one proves nothing).
+- The target only switches when the new plan opens one more chest or saves 4 s, at most once per 3 s.
+- New HUD snapshot fields: `planned` (chests in the current plan), `replanned` (shows ROUTE UPDATED),
+  `ahead` ([turn°, metres] at 12/30/50 m down the path). `chest` = chests opened + 1, `total` = opened +
+  planned. All old fields unchanged.
+
+Measured on the 60 s PS5 test clip (`ps5-part1.mp4`, recorded footage, `--metrics out/steering/replan-ps5-part1.json`):
+61 plans, 27 ms median, 34 ms p95, 37 ms max per plan, off the frame loop (frame to HUD p95 25 ms, same as
+before). 14–19 chests per 2-minute plan. The target switched twice in 60 s. Six buried chests he dug were
+each the active target when he reached them. Coverage 94%. The chest-to-chest travel table builds once in
+~6 s and is cached in `data/cache/`.
+
+What this doesn't prove: in this clip he was playing without the overlay, so the plan was following him, not
+the other way round. Whether following the arrow opens more chests needs a real run over Remote Play. Fixed
+along the way: holding the current target used to collapse the plan to that one chest (`ils_best` dropped
+every candidate when the player's other edges were masked); it now plans onward from the held chest.
+
 ## Arrow accuracy (measured 2026-11-27, test feed)
 
 Measured on the clean PS5 recording (`ps5-part1.mp4`, first 60 s, 3,562 frames) with

@@ -247,13 +247,167 @@ class HudRenderer:
 HUD_OPTIONS = {}                        # look-only settings from the command line: scale, style
 
 
-def hud_snapshot(index, chests, kinds, opened, player, yaw, waypoint, path, tracked, atlas_width):
+class FixedRoute:
+    """The hand-made film route: a fixed list of chests, one after another (``--route film``)."""
+
+    def __init__(self, chests, kinds, start, opened):
+        self.chests, self.kinds, self.index = chests, kinds, start - 1
+        # Chests counted as opened: the ones before the starting chest, then every one reached or marked found.
+        self.opened = set(range(start - 1 if opened is None else min(opened, len(chests))))
+
+    @property
+    def done(self):
+        return self.index >= len(self.chests)
+
+    @property
+    def key(self):
+        return self.index
+
+    def target(self):
+        return None if self.done else self.chests[self.index]
+
+    def kind(self):
+        return "" if self.done else self.kinds[self.index]
+
+    def fields(self):
+        return {"chest": min(self.index + 1, len(self.chests)), "total": len(self.chests), "opened": len(self.opened)}
+
+    def resolve(self, result):
+        if self.done:
+            return None
+        if result in {"found", "reached"}:
+            self.opened.add(self.index)
+        self.index += 1
+        return f"Chest {self.index} {result}."
+
+    def back(self):
+        if self.index > 0:
+            self.index -= 1
+            return f"Back to chest {self.index + 1}."
+
+    def update(self, player, moved, now):
+        return {}
+
+    def close(self):
+        pass
+
+
+class LiveRoute:
+    """Every chest spot on the map, re-planned about once a second from where the player is (``--route live``).
+
+    The active chest is the first stop of the newest plan. Reaching it (the arrive rule in ``run``) or pressing
+    found counts it as opened; skip or missing drops it. Standing within ``pass_meters`` of any other chest
+    spot for ``pass_seconds`` counts it as checked, so the plan never sends him back (not buried spots: those
+    need digging, so walking over one proves nothing). Back restores the
+    last spot dealt with and keeps it first until it is dealt with again."""
+
+    def __init__(self, terrain, budget, pass_meters=6.0, pass_seconds=1.5):
+        from replan import LivePlanner, Planner
+        self.planner = Planner(terrain, budget=budget)
+        self.worker = LivePlanner(self.planner)
+        self.xy = self.planner.xy
+        self.plan, self.history, self.visited = [], [], set()
+        self.opened = 0
+        self.sequence = 0
+        self.passing = {}
+        self.pass_px, self.pass_seconds = pass_meters / params.METERS_PER_PX, pass_seconds
+        self.force, self.pin = True, None
+        self.done = False
+
+    @property
+    def key(self):
+        return self.plan[0] if self.plan else None
+
+    def target(self):
+        return tuple(float(v) for v in self.xy[self.plan[0]]) if self.plan else None
+
+    def kind(self):
+        return self.planner.kinds[self.plan[0]] if self.plan else ""
+
+    def fields(self):
+        return {"chest": self.opened + 1, "total": self.opened + len(self.plan), "opened": self.opened,
+                "planned": len(self.plan)}
+
+    def _deal(self, spot, opened):
+        self.visited.add(spot)
+        self.history.append((spot, opened))
+        self.opened += opened
+        self.plan = [s for s in self.plan if s != spot]
+        self.passing.pop(spot, None)
+        if spot == self.pin:
+            self.pin = None
+        self.force = True
+
+    def resolve(self, result):
+        if not self.plan:
+            return None
+        spot = self.plan[0]
+        self._deal(spot, result in {"found", "reached"})
+        return f"Chest spot {spot} ({self.planner.kinds[spot]}) {result}; {self.opened} opened."
+
+    def back(self):
+        if not self.history:
+            return None
+        spot, opened = self.history.pop()
+        self.visited.discard(spot)
+        self.opened -= opened
+        self.plan = [spot] + [s for s in self.plan if s != spot]
+        self.pin, self.force = spot, True
+        return f"Back to chest spot {spot}."
+
+    def update(self, player, moved, now):
+        """Call on every frame. ``moved`` is True on frames with a new position fix."""
+        events = {}
+        if player is not None and moved:
+            near = np.flatnonzero(np.hypot(*(self.xy - np.asarray(player)).T) <= self.pass_px)
+            near = {int(i) for i in near if self.planner.kinds[i] != "buried"} - self.visited - {self.key}
+            self.passing = {spot: since for spot, since in self.passing.items() if spot in near}
+            for spot in near:
+                if now - self.passing.setdefault(spot, now) >= self.pass_seconds:
+                    self._deal(spot, False)
+                    events.setdefault("passed", []).append(spot)
+            self.worker.submit(player, self.visited, self.key, force=self.force, hold=self.pin is not None)
+            self.force = False
+        sequence, result = self.worker.latest()
+        if sequence != self.sequence and result is not None:
+            self.sequence = sequence
+            order, _, _, solve_ms, _ = result
+            order = [s for s in order if s not in self.visited]
+            if self.pin is not None:
+                order = [self.pin] + [s for s in order if s != self.pin]
+            if order and self.plan and order[0] != self.plan[0]:
+                events["replanned"] = True
+            self.plan = order
+            events["plan_ms"] = round(solve_ms, 1)
+        return events
+
+    def close(self):
+        self.worker.close()
+
+
+def path_ahead(player, yaw, path, marks=(12, 30, 50)):
+    """[turn, metres] at points this far down the path; stops at the chest."""
+    points, walked = [], 0.0
+    for a, b in zip(path, path[1:]):
+        step = dist(a, b) * params.METERS_PER_PX
+        while marks[len(points):] and walked + step >= marks[len(points)] and step > 0:
+            f = (marks[len(points)] - walked) / step
+            point = a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f
+            points.append([round(steering(player, yaw, point)[1], 1), marks[len(points)]])
+        walked += step
+    if path and len(points) < len(marks) and walked > (points[-1][1] if points else 0) + 3:
+        points.append([round(steering(player, yaw, path[-1])[1], 1), round(walked)])
+    return points
+
+
+def hud_snapshot(route, player, yaw, waypoint, path, tracked, atlas_width, replanned=False):
     """Everything the HUD draws for one moment. Old HUD builds only read chest, turn and meters."""
-    done = index >= len(chests)
-    snapshot = {"chest": min(index + 1, len(chests)), "total": len(chests), "opened": opened, "tracked": bool(tracked),
-                "done": done, "kind": "" if done else kinds[index], "mpu": params.METERS_PER_PX, **HUD_OPTIONS}
-    if tracked and not done:
-        target = chests[index]
+    target = route.target()
+    snapshot = {**route.fields(), "tracked": bool(tracked), "done": route.done, "kind": route.kind(),
+                "mpu": params.METERS_PER_PX, **HUD_OPTIONS}
+    if replanned:
+        snapshot["replanned"] = True
+    if tracked and target is not None:
         _, turn, _ = steering(player, yaw, waypoint)
         direct, _, _ = steering(player, yaw, target)
         x, y, _, _ = MINIMAP
@@ -261,6 +415,7 @@ def hud_snapshot(index, chests, kinds, opened, player, yaw, waypoint, path, trac
             "turn": turn, "meters": round(dist(player, target) * params.METERS_PER_PX), "heading": yaw,
             "bearing": direct, "player": [round(v, 1) for v in player], "target": list(target),
             "path": [[round(px, 1), round(py, 1)] for px, py in path[:80]],
+            "ahead": path_ahead(player, yaw, path),
             "mini": [x + MINIMAP_PLAYER[0], y + MINIMAP_PLAYER[1], atlas_width / 1500 / .99, x, y, x + MINIMAP[2], y + MINIMAP[3]],
             "compass": list(COMPASS),
         })
@@ -275,14 +430,15 @@ def overlay(frame, renderer, snapshot):
 def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None):
     atlas = land(cv2.imread(str(planner_source.MAP_IMAGE)))
     terrain = LegPather(planner_source.MAP_IMAGE, planner_source.MAP_SIZE)
-    script = (ROOT / "planner" / "film-route.js").read_text()
-    route = json.loads(script.partition("=")[2].strip().removesuffix(";"))
-    chests = route["chests"]
-    kinds = route.get("types") or ["chest"] * len(chests)
-    if not 1 <= args.chest <= len(chests):
-        raise SystemExit(f"Chest must be between 1 and {len(chests)}")
-    # Chests counted as opened: the ones before the starting chest, then every one reached or marked found.
-    opened = set(range(args.chest - 1 if args.opened is None else min(args.opened, len(chests))))
+    if args.route == "film":
+        script = (ROOT / "planner" / "film-route.js").read_text()
+        film = json.loads(script.partition("=")[2].strip().removesuffix(";"))
+        chests = film["chests"]
+        if not 1 <= args.chest <= len(chests):
+            raise SystemExit(f"Chest must be between 1 and {len(chests)}")
+        route = FixedRoute(chests, film.get("types") or ["chest"] * len(chests), args.chest, args.opened)
+    else:
+        route = LiveRoute(terrain, args.budget)
 
     marks = sorted((float(t), result) for t, result in args.mark)
     if window_helper is not None:
@@ -321,7 +477,7 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
         Thread(target=listen, daemon=True).start()
     near_since = None
     feed = Feed(capture, paced)
-    index = args.chest - 1
+    replanned_until = float("-inf")
     sequence = -1
     player = yaw = waypoint = route_key = None
     last_yaw = last_pos = next_head = next_pos = float("-inf")
@@ -341,7 +497,7 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
                 if feed.done or (args.duration and monotonic() - started >= args.duration):
                     break
                 if not args.headless and last_frame is not None:
-                    waiting = hud_snapshot(index, chests, kinds, len(opened), None, None, None, [], False, atlas.shape[1])
+                    waiting = hud_snapshot(route, None, None, None, [], False, atlas.shape[1])
                     cv2.imshow("Pirate Token Hunt | runtime steering", overlay(last_frame, renderer, waiting))
                     if cv2.waitKey(1) & 0xff == ord("q"):
                         break
@@ -370,24 +526,28 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
                     player, last_pos, position_updated = value, arrived, True
             while commands:
                 command = commands.pop(0)
-                if command == "back" and index > 0:
-                    index -= 1
-                    route_key = near_since = None
-                    print(f"Back to chest {index + 1}.", flush=True)
+                if command == "back":
+                    message = route.back()
+                    if message:
+                        route_key = near_since = None
+                        print(message, flush=True)
                 elif command == "next" and result is None:
                     result = "skipped"
                 elif command == "arrived" and result is None:
                     result = "reached"
-            if result is not None and index < len(chests):
-                if result in {"found", "reached"}:
-                    opened.add(index)
-                print(f"Chest {index + 1} {result}.", flush=True)
-                index += 1
-                route_key = near_since = None
-            target = chests[index] if index < len(chests) else None
+            if result is not None:
+                message = route.resolve(result)
+                if message:
+                    route_key = near_since = None
+                    print(message, flush=True)
+            events = route.update(player if arrived - last_pos < .85 else None, position_updated, media_time)
+            if events.get("replanned"):
+                replanned_until = media_time + .3
+                near_since = None
+            target = route.target()
             route_ms = 0.0
             if player is not None and target is not None and arrived - last_pos < .85:
-                key = cell_of(*player), index
+                key = cell_of(*player), route.key
                 if key != route_key:
                     tick = monotonic()
                     waypoint, path = next_waypoint(terrain, player, target)
@@ -404,12 +564,13 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
                         commands.insert(0, "arrived")
                 else:
                     near_since = None
-            state = hud_snapshot(index, chests, kinds, len(opened), player, yaw, waypoint, path, tracked, atlas.shape[1])
+            state = hud_snapshot(route, player, yaw, waypoint, path, tracked, atlas.shape[1],
+                                 replanned=media_time < replanned_until)
             image = overlay(frame, renderer, {**state, "t": media_time}) if renderer else None
             latency_ms = (monotonic() - arrived) * 1000
             if tracked and not reported_lock:
                 bearing, turn, _ = steering(player, yaw, waypoint)
-                print(f"Tracking locked: chest {index + 1}, heading {yaw}°, waypoint {bearing:.0f}°, turn {turn:+.0f}°.",
+                print(f"Tracking locked: chest {state['chest']}, heading {yaw}°, waypoint {bearing:.0f}°, turn {turn:+.0f}°.",
                       flush=True)
                 reported_lock = True
             if hud and media_time >= next_hud_update:
@@ -422,11 +583,16 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
                 hud.stdin.flush()
             processed += 1
             if args.metrics:
-                sample = {"t": round(media_time, 3), "frame": sequence, "chest": index + 1, "tracked": tracked,
+                sample = {"t": round(media_time, 3), "frame": sequence, "chest": state["chest"], "tracked": tracked,
                           "heading_update": head_updated, "position_update": position_updated, "routed": routed,
                           "route_ms": round(route_ms, 2), "frame_age_ms": round(latency_ms, 2)}
                 if result:
                     sample["mark"] = result
+                if isinstance(route, LiveRoute):
+                    sample.update({"spot": route.key, "planned": len(route.plan), "opened": route.opened})
+                    for name in ("plan_ms", "replanned", "passed"):
+                        if name in events:
+                            sample[name] = events[name]
                 if tracked:
                     bearing, turn, _ = steering(player, yaw, waypoint)
                     direct, _, _ = steering(player, yaw, target)
@@ -449,6 +615,7 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
                     marks.insert(0, (media_time, "found" if key == ord("f") else "missing"))
     finally:
         feed.stop.set()
+        route.close()
         if isinstance(capture, WindowInput):
             capture.interrupt()
         feed.worker.join(timeout=2)
@@ -485,7 +652,11 @@ def main():
                         metavar="W:H:X:Y", help="Gameplay rectangle in the 1920px-wide captured window")
     parser.add_argument("--start", type=float, default=0)
     parser.add_argument("--duration", type=float)
-    parser.add_argument("--chest", type=int, default=19, help="First active chest number")
+    parser.add_argument("--route", choices=("live", "film"), default="live",
+                        help="live: re-plan over every chest spot from where you are (default); film: the fixed 33-chest list")
+    parser.add_argument("--budget", type=float, default=120,
+                        help="Live route: plan the most chests reachable in this many seconds")
+    parser.add_argument("--chest", type=int, default=19, help="Film route: first active chest number")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--hud", action="store_true", help="Draw a nonactivating, click-through HUD on the selected window")
     parser.add_argument("--record", type=Path)
