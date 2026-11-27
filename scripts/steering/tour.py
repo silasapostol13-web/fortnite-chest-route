@@ -137,7 +137,7 @@ def solve(first_leg, T, nodes, warm=None, seconds=2.0):
         kept = [pos[c] for c in warm if c in pos]
         missing = sorted(set(range(1, len(nodes) + 1)) - set(kept))
         path = [0] + kept + missing + [len(nodes) + 1]
-        # the start moved: try entering the old order at every point (rotate) and keep the cheapest
+        # the start moved: keep the old order and let 2-opt / Or-opt repair it from the new start
         path = improve(D, path, seconds)
     else:
         path = improve(D, nearest_neighbour(D), seconds)
@@ -185,7 +185,7 @@ class TourPlanner:
     """Same inputs as ``replan.Planner.plan``; keeps one full-map order and only re-solves on leaving it."""
 
     def __init__(self, base: Planner, terrain, off_meters=25.0, off_seconds=3.0, near_stops=3,
-                 solve_seconds=2.0, reroute_seconds=0.5, nearby_meters=10.0, nearby_detour_s=6.0):
+                 solve_seconds=2.0, reroute_seconds=2.0, nearby_meters=10.0, nearby_detour_s=6.0):
         self.base, self.terrain = base, terrain
         self.nearby_meters, self.nearby_detour_s = nearby_meters, nearby_detour_s
         self.detour = None          # a chest slotted in first because he's right next to it ("CHEST NEARBY")
@@ -216,13 +216,12 @@ class TourPlanner:
     def mark(self, spot):
         """Kept for callers; ``plan`` sees dealt spots in ``visited`` and decides about re-planning there."""
 
-    def plan(self, player, visited, now):
-        """Return (order, rerouted). Cheap unless a re-plan is due."""
-        dealt = [s for s in self.order if s in visited and s not in self.order[:self.near_stops]]
-        # he opened / walked past a chest further down the list. Only a re-plan if that chest is over twice the off-route
-        # distance from the route line (a real side trip); one grabbed near the route just comes off the list.
-        if any(distance_to_path(tuple(self.base.xy[s]), self.leg_path) > 2 * self.off_meters for s in dealt):
-            self.reroute_reason = "off-route chest"
+    def plan(self, player, visited, now, pin=None):
+        """Return (order, rerouted). Cheap unless a re-plan is due. (``pin`` is handled by ``frozen.py``;
+        this prototype leaves it to ``live.LiveRoute``.)"""
+        # A spot dealt with anywhere on the list (reached, opened or walked past) just comes off it. Walking past
+        # one is not a reason to re-plan; a real side trip shows up as being off the route line instead.
+        before = self.order[0] if self.order else None
         self.order = [s for s in self.order if s not in visited]
         rerouted = False
         if not self.order:
@@ -238,7 +237,7 @@ class TourPlanner:
                 self.leg_path = self.terrain.path(player, tuple(self.base.xy[target]))
                 self.off_since = None
             off = distance_to_path(player, self.leg_path)
-            if off > self.off_meters:
+            if pin is None and off > self.off_meters:     # never re-plan under a Back pin he chose
                 self.off_since = now if self.off_since is None else self.off_since
                 if now - self.off_since >= self.off_seconds:
                     self.order = self._solve(player, visited, warm=self.order, reason="off route", now=now)
@@ -254,7 +253,12 @@ class TourPlanner:
                 self.leg_target = self.order[0]
                 self.leg_path = self.terrain.path(player, tuple(self.base.xy[self.order[0]]))
             self.off_since = None
-        return self.order, rerouted
+        # REROUTING only when the arrow's chest actually changed
+        return self.order, rerouted and before is not None and bool(self.order) and self.order[0] != before
+
+    def _nearby_ok(self, spot):
+        """Which spots may be slotted in as CHEST NEARBY: the tour holds every spot, so any still on it."""
+        return spot in self.order
 
     def _seconds_along(self, player, path):
         """Rough seconds left along ``path`` from the point on it nearest the player (running speed)."""
@@ -277,16 +281,17 @@ class TourPlanner:
                 if away <= self.nearby_meters:
                     return                                    # still on his way to the nearby chest
                 if away <= 2 * self.nearby_meters and not any(
-                        d[i] <= self.nearby_meters and i != self.detour and i in self.order for i in np.argsort(d)[:8]):
+                        d[i] <= self.nearby_meters and i != self.detour and self._nearby_ok(i) for i in np.argsort(d)[:8]):
                     return                                    # drifting, nothing closer: keep it
                 spot = self.order.pop(0)                      # walked away, or another chest is right next to him
-                self.order.insert(min(self.detour_home, len(self.order)), spot)
+                if self.detour_home is not None:              # back where it was (one not on the plan just goes)
+                    self.order.insert(min(self.detour_home, len(self.order)), spot)
                 self.log.append((now, "dropped", spot))
             self.detour = self.detour_home = None
             self.leg_target = None
         close = [int(i) for i in np.argsort(d)[:8] if d[i] <= self.nearby_meters]
         target = self.order[0]
-        close = [i for i in close if i != target and i in self.order]
+        close = [i for i in close if i != target and self._nearby_ok(i)]
         if not close:
             return
         if self.leg_target != target or self.leg_path is None:
@@ -299,8 +304,9 @@ class TourPlanner:
             if via <= cost:
                 best, cost = c, via
         if best is not None:
-            self.detour_home = self.order.index(best)
-            self.order.remove(best)
+            self.detour_home = self.order.index(best) if best in self.order else None
+            if best in self.order:
+                self.order.remove(best)
             self.order.insert(0, best)
             self.detour = best
             self.log.append((now, "nearby", best))
@@ -325,7 +331,7 @@ class TourWorker:
 
     def submit(self, player, visited, current, force=False, hold=False):
         with self.lock:
-            self.request = (tuple(player), frozenset(visited), force)
+            self.request = (tuple(player), frozenset(visited), force, current if hold else None)
             self.lock.notify()
 
     def _loop(self):
@@ -337,11 +343,11 @@ class TourWorker:
                     self.lock.wait(timeout=0.05)
                 if self.stopped:
                     return
-                player, visited, _ = self.request
+                player, visited, _, pin = self.request
                 self.request = None
             started = time.monotonic()
             before = list(self.tour.order)
-            order, rerouted = self.tour.plan(player, set(visited), started)
+            order, rerouted = self.tour.plan(player, set(visited), started, pin=pin)
             last = time.monotonic()
             if order == before and not rerouted:
                 continue                       # nothing new to publish

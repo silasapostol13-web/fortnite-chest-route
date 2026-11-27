@@ -36,6 +36,7 @@ from tour import TourPlanner  # noqa: E402
 M = params.METERS_PER_PX
 ARRIVE_M, ARRIVE_S, PASS_M, PASS_S = 8.0, 1.5, 6.0, 1.5
 HOLD_S, PLAN_EVERY = 3.0, 1.0
+PLANNERS = ["now", "frozen"]
 
 
 def arrive_radius(target, last_reached, meters=ARRIVE_M):
@@ -51,7 +52,11 @@ class Arm:
 
     def __init__(self, name, base, terrain):
         self.name, self.base, self.terrain = name, base, terrain
-        self.tour = TourPlanner(base, terrain) if name == "tour" else None
+        if name == "frozen":
+            from frozen import FrozenPlanner
+            self.tour = FrozenPlanner(base, terrain)
+        else:
+            self.tour = TourPlanner(base, terrain) if name == "tour" else None
         self.visited, self.opened = set(), 0
         self.target = None
         self.last_plan = float("-inf")
@@ -61,6 +66,8 @@ class Arm:
         self.passing = {}
         self.events = []        # (t, kind, old, new)
         self.plan_ms = []
+        self.tick_ms = []       # every planner call (frozen/tour run cheap checks on every fix)
+        self.first_stop_m = []  # metres from him to each new arrow target
         self.ignored = []       # (t, spot, metres, detour_s): an unopened spot within 8 m while the arrow points elsewhere
 
     def deal(self, spot, opened, now, why):
@@ -100,6 +107,7 @@ class Arm:
             started = time.monotonic()
             order, rerouted = self.tour.plan(player, self.visited, now)
             ms = (time.monotonic() - started) * 1000
+            self.tick_ms.append(ms)
             if rerouted or old is None:
                 self.plan_ms.append(ms)
             new = order[0] if order else None
@@ -114,6 +122,8 @@ class Arm:
             self.plan_ms.append((time.monotonic() - started) * 1000)
             self.last_plan = now
             new = order[0] if order else None
+        if new != old and new is not None:
+            self.first_stop_m.append(float(np.hypot(*(xy[new] - np.asarray(player))) * M))
         if new != old:
             if old is not None:
                 self.last_switch = now
@@ -164,8 +174,14 @@ def summarise(arm, history, seconds):
     if arm.tour:
         out["solves"] = [(k, round(v), n) for k, v, n in arm.tour.solves]
         out["reroutes"] = len(arm.tour.reroutes)
+        out["reroutes_per_min"] = round(len(arm.tour.reroutes) / minutes, 2)
+        tick = np.asarray(arm.tick_ms) if arm.tick_ms else np.zeros(1)
+        out["tick_ms_p50"], out["tick_ms_p95"] = round(float(np.median(tick)), 1), round(float(np.percentile(tick, 95)), 1)
+        out["extend_ms"] = [round(ms) for _, ms, _ in getattr(arm.tour, "extends", [])][:20]
         out["reroute_detail"] = [{"t": round(t, 1), "reason": why, "moved_10s_m": round(displacement(history, t, 10.0))}
                                  for t, why, _ in arm.tour.reroutes]
+        out["extends"] = len(getattr(arm.tour, "extends", []))
+        out["first_stop_m"] = [round(m) for m in arm.first_stop_m[:12]]
         out["nearby_detours"] = sum(k == "nearby" for _, k, _ in arm.tour.log)
         out["detours_dropped"] = sum(k == "dropped" for _, k, _ in arm.tour.log)
         drops = {round(t, 3) for t, k, _ in arm.tour.log if k == "dropped"}
@@ -187,7 +203,7 @@ def replay(paths, base, terrain):
             if not dedup or p != dedup[-1][1]:
                 dedup.append((t, p))
         seconds = dedup[-1][0] - dedup[0][0]
-        arms = [Arm("now", base, terrain), Arm("tour", base, terrain)]
+        arms = [Arm(name, base, terrain) for name in PLANNERS]
         history = []
         for t, p in dedup:
             history.append((t, p))
@@ -224,6 +240,7 @@ def simulate(name, base, terrain, start, seconds=600, dt=0.5, wander=0.0, seed=0
     own_goal = False
     history = []
     opened = 0
+    opened_at = []
     t = 0.0
     while t < seconds:
         seen = (pos[0] + rng.gauss(0, noise_m / M), pos[1] + rng.gauss(0, noise_m / M))
@@ -263,6 +280,7 @@ def simulate(name, base, terrain, start, seconds=600, dt=0.5, wander=0.0, seed=0
                 else:
                     arm.deal(goal, True, t, "found")
             opened += 1
+            opened_at.append(t)
             line = None
             own_goal = False
             goal = None
@@ -276,6 +294,7 @@ def simulate(name, base, terrain, start, seconds=600, dt=0.5, wander=0.0, seed=0
         t += dt
     out = summarise(arm, history, seconds)
     out["opened"] = opened
+    out["opened_2_5_10"] = [sum(x <= m * 60 for x in opened_at) for m in (2, 5, 10)]
     return out
 
 
@@ -293,7 +312,7 @@ def drift(base, terrain, pairs=120, seed=3, noise_m=1.2):
         if options:
             found.append((a, rng.choice(options)))
     out = {}
-    for name in ("now", "tour"):
+    for name in PLANNERS:
         changes, flipped = [], 0
         for k, (a, b) in enumerate(found):
             arm = Arm(name, base, terrain)
@@ -323,7 +342,10 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--starts", type=int, default=6)
     parser.add_argument("--minutes", type=float, default=10)
+    parser.add_argument("--planners", default="now,frozen", help="Comma list of now, frozen, tour")
     args = parser.parse_args()
+    global PLANNERS
+    PLANNERS = args.planners.split(",")
     terrain = LegPather(planner_source.MAP_IMAGE, planner_source.MAP_SIZE)
     base = Planner(terrain)
     if args.mode == "replay":
@@ -337,11 +359,11 @@ def main():
         result = {"starts": [list(map(float, s)) for s in starts], "runs": []}
         for wander in (0.0, 0.2):
             for k, start in enumerate(starts):
-                for name in ("now", "tour"):
+                for name in PLANNERS:
                     r = simulate(name, base, terrain, start, seconds=args.minutes * 60, wander=wander, seed=k)
                     r.update({"planner": name, "start": k, "wander": wander})
                     result["runs"].append(r)
-                    print(json.dumps({key: r[key] for key in ("planner", "start", "wander", "opened",
+                    print(json.dumps({key: r[key] for key in ("planner", "start", "wander", "opened_2_5_10",
                                                               "switches_per_min", "plan_ms_p50", "plan_ms_p95")}),
                           flush=True)
     args.out.parent.mkdir(parents=True, exist_ok=True)

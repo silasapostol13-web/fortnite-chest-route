@@ -305,10 +305,15 @@ class LiveRoute:
     need digging, so walking over one proves nothing). Back restores the
     last spot dealt with and keeps it first until it is dealt with again."""
 
-    def __init__(self, terrain, budget, pass_meters=6.0, pass_seconds=1.5, tour=False, off_meters=25.0):
+    def __init__(self, terrain, budget, pass_meters=6.0, pass_seconds=1.5, mode="frozen", off_meters=25.0):
         from replan import LivePlanner, Planner
         self.planner = Planner(terrain, budget=budget)
-        if tour:      # one route through every chest spot, rerouted only when he leaves it (tour.py)
+        if mode == "frozen":   # most chests in the next ``budget`` s, planned once and followed (frozen.py)
+            from frozen import FrozenPlanner
+            from tour import TourWorker
+            self.tour = FrozenPlanner(self.planner, terrain)
+            self.worker = TourWorker(self.tour)
+        elif mode == "tour":   # one route through every chest spot, rerouted only when he leaves it (tour.py)
             from tour import TourPlanner, TourWorker
             self.tour = TourPlanner(self.planner, terrain, off_meters=off_meters)
             self.worker = TourWorker(self.tour)
@@ -465,7 +470,7 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
             raise SystemExit(f"Chest must be between 1 and {len(chests)}")
         route = FixedRoute(chests, film.get("types") or ["chest"] * len(chests), args.chest, args.opened)
     else:
-        route = LiveRoute(terrain, args.budget, tour=args.route == "tour", off_meters=args.off_route_meters)
+        route = LiveRoute(terrain, args.budget, mode=args.route, off_meters=args.off_route_meters)
 
     marks = sorted((float(t), result) for t, result in args.mark)
     if window_helper is not None:
@@ -684,12 +689,12 @@ def main():
                         metavar="W:H:X:Y", help="Gameplay rectangle in the 1920px-wide captured window")
     parser.add_argument("--start", type=float, default=0)
     parser.add_argument("--duration", type=float)
-    parser.add_argument("--route", choices=("tour", "live", "film"), default="live",
-                        help="tour (prototype): one route through every chest spot, rerouted only when you leave "
-                             "it; live (default): re-plan the most chests in the next --budget seconds every second; "
-                             "film: the fixed 33-chest list")
+    parser.add_argument("--route", choices=("frozen", "live", "tour", "film"), default="live",
+                        help="frozen: plan the most chests in the next --budget seconds once and follow it, re-planning only "
+                             "when you lose time on the route (default); live: re-plan every second; tour (prototype): one "
+                             "route through every chest spot; film: the fixed 33-chest list")
     parser.add_argument("--off-route-meters", type=float, default=25,
-                        help="Tour route: re-plan when you're this far from the planned path for 3 s")
+                        help="Tour route only: re-plan when you're this far from the planned path for 3 s")
     parser.add_argument("--budget", type=float, default=120,
                         help="Live route: plan the most chests reachable in this many seconds")
     parser.add_argument("--chest", type=int, default=19, help="Film route: first active chest number")
