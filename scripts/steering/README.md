@@ -40,6 +40,28 @@ cp scripts/steering/replay.html out/steering/index.html
 open out/steering/index.html
 ```
 
+## Arrow accuracy (measured 2026-11-27, test feed)
+
+Measured on the clean PS5 recording (`ps5-part1.mp4`, first 60 s, 3,562 frames) with
+`live.py --metrics` and then `python scripts/steering/accuracy.py out/steering/accuracy-ps5-part1.json`.
+This is recorded footage, not a live Remote Play session; console, network and display lag are not in it.
+
+- **Tracking coverage:** 3,348 of 3,562 frames (94%) had both heading and position.
+- **Compass reading vs the number on screen:** 24 random frames checked by eye
+  (`out/steering/accuracy/compass-check.png`): all 24 within 5°, most exact. Misses were 2–5° when a map
+  marker sat on the digits.
+- **Compass heading vs the direction he actually moved:** 13 independent ~2 s stretches of straight running
+  (only 13 because he spent most of the clip looting or turning). Median 22°, p90 56°, 15% over 45°, signed
+  median −2° (no bias). The compass shows where the camera looks, so camera swings while running count as
+  error here; the screen check above shows the reading itself is right.
+- **Arrow vs the path 12 m ahead:** 3,164 frames. Median 5°, p90 17°. Wrong way (over 90° off): 0%.
+- **Lag inside the program:** frame to HUD p50 0.1 ms, p95 27 ms. Heading reading age p50 50 ms, p95 181 ms.
+  Position age p50 198 ms, p95 384 ms (about 1 m of running at his median 3 m/s).
+- **What this doesn't prove:** the arrow check compares the arrow with the tool's own path from its own
+  position. Positions passed 0.2–1.3 m from chest spots he opened in this clip, but chest coordinates are
+  only as good as the map data.
+- **Not measurable:** up/down. The map has no height data, so the arrow can't say climb or drop.
+
 ## Runtime pipeline
 
 `live.py` works from capture frames as they arrive. It keeps the latest frame,
@@ -269,14 +291,8 @@ three moments) and `closeness.png` (each style at 40, 15 and 6 m).
   frames against the compass in the same frame: at 12.0 s heading 70°, waypoint
   93°, arrow 23° right; at 24.0 s heading 126°, waypoint 113°, arrow 13° left;
   at 28.5 s heading 98°, chest pin drawn 15° right of the heading mark.
-- `accuracy.py` on the first 60 s of a clean 1080p60 PS5 capture, chest 1:
-  3,348 of 3,562 frames tracked (94.0%). Arrow bearing against a fresh Dijkstra
-  path 12 m ahead from the same position: median 5.2°, p90 16.5°, 0.0% more
-  than 90° off (3,164 frames). Movement direction against compass heading over
-  1 s windows that moved more than 5 m: median 19.4°, p90 34.0°, none over 45°,
-  but only 12 windows qualified because he mostly stood digging. Frame to HUD
-  snapshot inside Python: p50 0.1 ms, p95 27.2 ms. Heading age p50 50 ms, p95
-  181 ms. Position age p50 198 ms, p95 384 ms.
+- `accuracy.py` on the first 60 s of a clean PS5 capture: see **Arrow accuracy** near the top
+  (the movement check now uses ~2 s straight stretches instead of 1 s windows).
 - The arrow check compares the arrow with the tool's own path from its own
   position estimate. It does not prove the position or the chest coordinates
   are right in the world. In both recordings the player dug up chests while

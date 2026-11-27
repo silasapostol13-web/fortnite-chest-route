@@ -3,7 +3,7 @@
     python scripts/steering/live.py --input CLIP --duration 60 --chest 1 --headless --metrics run.json
     python scripts/steering/accuracy.py run.json
 
-Heading check: over 1 s windows where the minimap fix moved more than 5 m, the direction he actually moved
+Heading check: over ~2 s stretches where the minimap fix moved more than 5 m in a mostly straight line, the direction he actually moved
 against the OCR compass heading. The compass shows where the camera looks, so strafing or running with the
 camera turned counts as error here even when both readings are right.
 Arrow check: the bearing the arrow commanded against a fresh Dijkstra path from the same position, 12 m ahead.
@@ -55,23 +55,29 @@ def main():
     tracked = [r for r in rows if r.get("tracked")]
     report = {"frames": len(rows), "tracked": len(tracked), "coverage_pct": round(100 * len(tracked) / len(rows), 1)}
 
-    # (a) movement direction against compass heading
+    # (a) movement direction against compass heading, over ~2 s stretches of mostly straight running
     fixes = [(r["t"], r["position"]) for r in tracked if r.get("position_update")]
-    errors = []
+    errors, used_until = [], -1.0
     for i, (t0, p0) in enumerate(fixes):
-        later = [(t, p) for t, p in fixes[i + 1:] if .8 <= t - t0 <= 1.2]
-        if not later:
+        if t0 < used_until:                                  # windows don't overlap, so samples stay independent
             continue
-        t1, p1 = later[0]
-        if dist(p0, p1) * params.METERS_PER_PX <= 5:
+        j = next((k for k in range(i + 1, len(fixes)) if fixes[k][0] - t0 >= 1.8), None)
+        if j is None or fixes[j][0] - t0 > 2.6:
+            continue
+        t1, p1 = fixes[j]
+        moved = dist(p0, p1) * params.METERS_PER_PX
+        walked = sum(dist(a[1], b[1]) for a, b in zip(fixes[i:j], fixes[i + 1:j + 1])) * params.METERS_PER_PX
+        if moved <= 5 or moved < .85 * walked:
             continue
         headings = [r["heading"] for r in tracked if t0 <= r["t"] <= t1]
         mean = degrees(atan2(np.mean([np.sin(np.radians(h)) for h in headings]),
                              np.mean([np.cos(np.radians(h)) for h in headings])))
         errors.append(wrap(bearing(p0, p1) - mean))
+        used_until = t1
     if errors:
         report["heading_vs_movement_deg"] = {**spread(errors),
-                                             "off_by_45_pct": round(100 * np.mean(np.abs(errors) > 45), 1)}
+                                             "off_by_45_pct": round(100 * np.mean(np.abs(errors) > 45), 1),
+                                             "signed_median": round(float(np.median(errors)), 1)}
 
     # (b), (c) commanded bearing against a fresh path from the same spot
     terrain = LegPather(planner_source.MAP_IMAGE, planner_source.MAP_SIZE)
