@@ -134,8 +134,9 @@ cd /Users/silas/Developer/fortnite-chest-route
 .venv/bin/python scripts/steering/live.py --remote-play --hud --chest 1
 ```
 
-The HUD appears once the compass and minimap are tracked, and disappears while
-tracking is stale. Stop the runner with Control-C in Terminal. The active chest
+The HUD appears once the compass and minimap are tracked. While tracking is
+stale it drops the arrow and shows "FINDING SIGNAL" for up to 8 seconds, then
+fades out until the next lock. Stop the runner with Control-C in Terminal. The active chest
 moves on by itself after the player stays within `--arrive-meters` (default 8)
 of it for `--arrive-seconds` (default 1.5; 0 turns this off). While Remote Play
 keeps focus, **Control-Option-N** skips to the next chest and
@@ -189,3 +190,100 @@ Use **F** and **M** in the Mac preview to advance the active chest. Press
 repeats the latest available frame when capture or processing runs below
 60 fps. It is a 720p overlay video without audio. Capture game audio
 separately if it is needed for the edit.
+
+## Themed HUD (Pirate Token Hunt)
+
+`window_hud.swift` draws the whole look in code with macOS system fonts
+(Futura Condensed ExtraBold, Avenir Next Condensed Heavy Italic). No game
+assets, icons or fonts are used. The same binary draws the live click-through
+panel and, with `--render W H`, raw frames for `live.py --record` and the
+preview window, so recordings match the live HUD.
+
+What makes a HUD read as native to this game, from the test footage and a
+short look at HUD and stream-overlay write-ups:
+
+- Heavy condensed capitals with a slight forward lean, white or yellow, with a
+  dark edge and soft drop shadow so they hold on sand, sky and water.
+- Text mostly floats on the picture. Panels are dark navy and see-through, and
+  boxes lean (parallelograms), they are rarely upright rectangles.
+- Saturated colour carries meaning: gold and orange for the best loot, blue and
+  green for shield and health, white for neutral numbers.
+- Icons are chunky with a dark outline and one highlight, no thin strokes.
+- Distances are short numbers with a small "m" next to a pin, and pins also
+  ride on the compass strip.
+- Motion is quick and bouncy: a scale pop, a flash sweep, then still.
+- Overlay guides agree on keeping clear of the game's own HUD, staying under
+  about 70% panel opacity, and checking the result at phone size.
+
+Pieces, all in a 1280x720 design space scaled to the gameplay rectangle:
+
+- Card under the compass: gold compass dial with the arrow, title, active
+  chest, distance, turn wording (`STRAIGHT AHEAD` under 15°, `SLIGHT` under
+  45°, `TURN`, `BEHIND YOU` over 135°), chests-opened counter and one tick per
+  chest on the route. The plate stops at x=796 so it clears the storm banner.
+- Arrow styles (`--hud-style`): `ribbon` (default) draws the next ~50 m of the
+  Dijkstra path from the player's point of view, so it bends where the path
+  bends; `arrow` is one straight gold arrow to the next waypoint; `cutlass` is
+  a sword needle. Height is not shown: the map data has none.
+- Closeness: the distance counts down, grows and turns white inside 20 m. Each
+  style adds its own cue from 60 m in: `ribbon` fills the dial rim clockwise,
+  `arrow` fills from tail to tip, `cutlass` sends pings that speed up. At 5 m
+  every style switches to the token and `DIG HERE!`.
+- Compass pin: a token under the strip at the chest's straight-line bearing.
+  Measured on `gameplay.mp4`: N, NE, E, SE labels sit 106.9 px apart at 1280
+  wide, so 2.375 px per degree (3.5625 at 1920), centre x 639. Beyond 80° it
+  parks at the strip's edge with a chevron.
+- Minimap: the Dijkstra path and a chest token, clamped to the minimap edge
+  when the chest is off it.
+- A chest reached or marked found plays a pop: ring, sparks, gold sweep and
+  `CHEST N OPENED!`. `--hud-scale` resizes the card (0.6 to 1.6).
+
+The arrow, pin and minimap position are smoothed (0.10 s, 0.10 s and 0.22 s
+time constants) and redrawn at 60 Hz between the 20 Hz snapshots.
+
+Snapshot fields added to the HUD protocol, all optional (the first protocol's
+`window`, `chest`, `turn`, `meters` still works): `tracked`, `done`, `total`,
+`opened`, `kind`, `heading`, `bearing`, `player`, `target`, `path`, `mini`,
+`compass`, `game`, `mpu`, `scale`, `style`, `t`, and `ahead` (`[turn, metres]`
+points down the path; worked out from `path` when absent) and `replanned`
+(shows `ROUTE UPDATED` for 2 s). `ahead` and `replanned` are read leniently: an
+unexpected shape is treated as absent.
+
+Check the look without a console:
+
+```bash
+cd scripts/steering
+../../.venv/bin/python hud_states.py ../../out/steering/gameplay.mp4 ../../out/steering/hud-states
+cd ../..
+.venv/bin/python scripts/steering/live.py --input out/steering/gameplay.mp4 --chest 19 \
+  --arrive-meters 16 --headless --record-fps 30 --record out/steering/hud-themed.mp4
+```
+
+`hud_states.py` writes eight states, `styles.png` (three styles on the same
+three moments) and `closeness.png` (each style at 40, 15 and 6 m).
+
+### Verified on recordings (2026-11-27)
+
+- `gameplay.mp4`, 36 s, chest 19, 16 m arrival radius: 969 of 1,070 frames
+  tracked, chest 19 reached once and the pop played. Spot checks of rendered
+  frames against the compass in the same frame: at 12.0 s heading 70°, waypoint
+  93°, arrow 23° right; at 24.0 s heading 126°, waypoint 113°, arrow 13° left;
+  at 28.5 s heading 98°, chest pin drawn 15° right of the heading mark.
+- `accuracy.py` on the first 60 s of a clean 1080p60 PS5 capture, chest 1:
+  3,348 of 3,562 frames tracked (94.0%). Arrow bearing against a fresh Dijkstra
+  path 12 m ahead from the same position: median 5.2°, p90 16.5°, 0.0% more
+  than 90° off (3,164 frames). Movement direction against compass heading over
+  1 s windows that moved more than 5 m: median 19.4°, p90 34.0°, none over 45°,
+  but only 12 windows qualified because he mostly stood digging. Frame to HUD
+  snapshot inside Python: p50 0.1 ms, p95 27.2 ms. Heading age p50 50 ms, p95
+  181 ms. Position age p50 198 ms, p95 384 ms.
+- The arrow check compares the arrow with the tool's own path from its own
+  position estimate. It does not prove the position or the chest coordinates
+  are right in the world. In both recordings the player dug up chests while
+  the HUD still showed 29 to 70 m to its active chest.
+- Two fresh viewers judged frames and the clip. The first misread the old
+  dart-shaped arrow as disagreeing with the turn wording; the arrow now has a
+  head and shaft. The second found nothing serious.
+- Not verified: the live panel on screen over PS Remote Play (placement on the
+  gameplay rectangle, 60 Hz redraw cost, the hot keys). The live binary was
+  only fed snapshots with no matching window and exited cleanly.

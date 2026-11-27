@@ -30,6 +30,15 @@ STATES = {
 }
 
 
+STYLES = ("ribbon", "arrow", "cutlass")
+# The same three moments for every style: nearly straight, a right turn that bends back left, and chest behind.
+MOMENTS = (
+    {"turn": 8, "ahead": [[8, 12], [6, 30], [5, 50]], "bearing": 76, "meters": 61},
+    {"turn": 55, "ahead": [[55, 12], [38, 27], [12, 42]], "bearing": 84, "meters": 88},
+    {"turn": -150, "ahead": [[-150, 12], [-128, 29], [-105, 47]], "bearing": 300, "meters": 140, "target": [1060, 400], "path": None},
+)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path, help="Gameplay video or image")
@@ -58,6 +67,34 @@ def main():
         tiles.append(cv2.resize(image[0:230, 330:1280], None, fx=.8, fy=.8, interpolation=cv2.INTER_AREA))
     sheet = np.vstack([np.hstack(tiles[i:i + 2]) for i in range(0, len(tiles), 2)])
     cv2.imwrite(str(args.output / "sheet.png"), sheet)
+
+    # The three arrow styles side by side on the same moments: one row per style, one column per moment.
+    rows = []
+    for style in STYLES:
+        row = []
+        for changes in MOMENTS:
+            renderer = HudRenderer(binary)
+            for step in range(45):
+                image = renderer.composite(frame.copy(), {**BASE, **changes, "style": style, "t": step / 30})
+            renderer.close()
+            row.append(cv2.resize(image[30:170, 425:815], None, fx=1.6, fy=1.6, interpolation=cv2.INTER_CUBIC))
+        rows.append(np.hstack(row))
+        cv2.imwrite(str(args.output / f"style-{style}.png"), rows[-1])
+    cv2.imwrite(str(args.output / "styles.png"), np.vstack(rows))
+
+    # How each style shows the chest getting closer: 40 m, 15 m, 6 m. (At 5 m every style flips to DIG HERE.)
+    rows = []
+    for style in STYLES:
+        row = []
+        for meters in (40, 15, 6):
+            renderer = HudRenderer(binary)
+            for step in range(52):
+                image = renderer.composite(frame.copy(), {**BASE, **MOMENTS[0], "meters": meters, "style": style, "t": step / 30})
+            renderer.close()
+            row.append(cv2.resize(image[30:170, 425:815], None, fx=1.6, fy=1.6, interpolation=cv2.INTER_CUBIC))
+        rows.append(np.hstack(row))
+        cv2.imwrite(str(args.output / f"closeness-{style}.png"), rows[-1])
+    cv2.imwrite(str(args.output / "closeness.png"), np.vstack(rows))
     print(f"Wrote {len(tiles)} states to {args.output}.")
 
 

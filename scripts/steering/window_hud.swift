@@ -7,6 +7,12 @@ import Carbon
 import CoreGraphics
 import CoreText
 
+/// A field that may arrive in a shape this build doesn't expect. A mismatch reads as "absent" instead of dropping the snapshot.
+struct Soft<T: Decodable>: Decodable {
+    let value: T?
+    init(from decoder: Decoder) { value = try? T(from: decoder) }
+}
+
 struct Snapshot: Decodable {
     let window: UInt32?
     let chest: Int
@@ -26,6 +32,10 @@ struct Snapshot: Decodable {
     let mini: [Double]?       // minimap in 1920 px: player x, player y, px per map unit, x0, y0, x1, y1
     let compass: [Double]?    // compass strip in 1920 px: centre x, strip bottom y, px per degree
     let game: [Double]?       // gameplay rectangle inside the window, as fractions: x, y, w, h
+    let ahead: Soft<[[Double]]>?   // [turn degrees, metres] for points down the path, nearest first (+ = right)
+    let replanned: Soft<Bool>?     // true on the frame the chest order changed
+    let style: String?        // "ribbon" (bends with the path), "arrow" (straight gold arrow), "cutlass" (sword needle)
+    let mpu: Double?          // metres per map unit
     let scale: Double?        // card size, 1 = default; grows down from under the compass
     let t: Double?            // media time; drives animation in --render
 }
@@ -49,8 +59,11 @@ final class Hud {
     var done = false, primed = false
     var angle = 0.0, pinAngle = 0.0, px = 0.0, py = 0.0
     var chest = -1, opened = -1, total = 33, kind = ""
-    var popAt = -1e9, popChest = 0, slideAt = -1e9
+    var popAt = -1e9, popChest = 0, slideAt = -1e9, replanAt = -1e9
+    var bend: [(Double, Double)] = []      // smoothed [turn, metres] down the path
     var unit: CGFloat = 1
+    var near = 0.0                         // 0 at 60 m or more from the chest, 1 at 6 m
+    var beat = 0.0                         // pulse phase; runs faster the closer the chest is
 
     func feed(_ snapshot: Snapshot?, at now: Double) {
         guard let s = snapshot else { return }
@@ -60,6 +73,7 @@ final class Hud {
             if let o = s.opened, opened >= 0, o > opened { popAt = now; popChest = chest }
             if s.chest != chest { slideAt = now }
         }
+        if s.replanned?.value == true { replanAt = now }
         chest = s.chest
         opened = s.opened ?? opened
         total = s.total ?? total
@@ -234,7 +248,16 @@ final class Hud {
         }
         angle = wrap(angle)
         pinAngle = wrap(pinAngle)
+        let fresh = pathAhead(s)
+        if fresh.count != bend.count || !live {
+            if live || bend.isEmpty { bend = fresh }
+        } else {
+            let k = 1 - exp(-dt / 0.12)
+            bend = zip(bend, fresh).map { (wrap($0.0 + wrap($1.0 - $0.0) * k), $0.1 + ($1.1 - $0.1) * k) }
+        }
 
+        near = live && !search ? clamp((60 - Double(meters)) / 54, 0, 1) : 0
+        beat += dt * (1.2 + 5.5 * near * near)
         unit = width / 1280
         ctx.saveGState()
         ctx.translateBy(x: 0, y: height)
@@ -308,22 +331,27 @@ final class Hud {
             text(ctx, search ? (kind == "buried" ? "DIG HERE!" : "OPEN IT!") : "CHEST \(chest)", display, 31, x: 550 + enter, y: 126,
                  color: search ? goldHi : white, outline: 2, shear: 0.12)
             if !search {
+                let hot = clamp((20 - Double(meters)) / 14, 0, 1)
+                let big = CGFloat(31 * (1 + 0.16 * hot + 0.06 * hot * abs(sin(beat * .pi))))
                 let m = text(ctx, "m", display, 20, x: 790 + enter, y: 126, align: 1, color: gold, outline: 2, shear: 0.12)
-                text(ctx, "\(meters)", display, 31, x: 790 + enter - m - 1, y: 126, align: 1, color: goldHi, outline: 2, shear: 0.12)
+                text(ctx, "\(meters)", display, big, x: 790 + enter - m - 1, y: 126, align: 1,
+                     color: rgb(255, 226 + 26 * hot, 110 + 120 * hot), outline: 2, shear: 0.12)
             }
             ctx.restoreGState()
         }
 
         // Bottom row: what to do, and how the route was found.
         let side = angle > 0 ? "RIGHT" : "LEFT"
-        let action = done ? "ALL \(total) CHESTS CHECKED" : scanning ? "READING COMPASS + MINIMAP"
+        let action = done ? "ALL \(total) CHESTS CHECKED" : popping && pop < 1.05 ? "NEXT UP  ·  CHEST \(chest)" : scanning ? "READING COMPASS + MINIMAP"
             : search ? "CHEST \(chest)  ·  X MARKS THE SPOT"
             : abs(angle) < 15 ? "STRAIGHT AHEAD" : abs(angle) > 135 ? "BEHIND YOU  ·  TURN \(side)"
             : abs(angle) < 45 ? "SLIGHT \(side)" : "TURN \(side)"
         text(ctx, action, label, 15, x: 550, y: 141.5, color: abs(angle) < 15 && live && !search ? goldHi : rgb(236, 240, 252),
              outline: 1.1, kern: 0.7)
-        if !search && !scanning && !done && abs(angle) <= 135 {
-            text(ctx, "DIJKSTRA ROUTE", label, 9.5, x: 787, y: 140.5, align: 1, color: rgb(150, 172, 220), outline: 0.9, kern: 0.6)
+        if !search && !scanning && !done && abs(angle) <= 135 && !(popping && pop < 1.05) {
+            let rerouted = now - replanAt < 2
+            text(ctx, rerouted ? "ROUTE UPDATED" : "DIJKSTRA ROUTE", label, 9.5, x: 787, y: 140.5, align: 1,
+                 color: rerouted ? goldHi : rgb(150, 172, 220), outline: 0.9, kern: 0.6)
         }
 
         // Route progress: one slanted tick per chest on the route.
@@ -339,12 +367,12 @@ final class Hud {
             ctx.fillPath()
         }
 
-        dial(ctx, CGPoint(x: 492, y: 109), live: live, search: search || done, scanning: scanning, now: now, pop: popping ? pop : nil)
+        dial(ctx, CGPoint(x: 492, y: 109), style: s.style ?? "ribbon", search: search || done, scanning: scanning, now: now, pop: popping ? pop : nil)
         ctx.restoreGState()
         ctx.restoreGState()
     }
 
-    func dial(_ ctx: CGContext, _ c: CGPoint, live: Bool, search: Bool, scanning: Bool, now: Double, pop: Double?) {
+    func dial(_ ctx: CGContext, _ c: CGPoint, style: String, search: Bool, scanning: Bool, now: Double, pop: Double?) {
         let r: CGFloat = 46
         if let pop {                                 // ring and sparks when a chest is opened
             let p = clamp(pop / 0.7, 0, 1)
@@ -396,7 +424,22 @@ final class Hud {
         ctx.addPath(rim)
         ctx.clip(using: .evenOdd)
         let g = CGGradient(colorsSpace: space, colors: [goldHi, gold, goldLo] as CFArray, locations: nil)!
+        let charging = style == "ribbon" && !search && !scanning
+        if charging {                                 // closeness: the rim fills clockwise from the top
+            ctx.setFillColor(rgb(112, 72, 20))
+            ctx.fill(CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r))
+            let wedge = CGMutablePath()
+            wedge.move(to: c)
+            wedge.addArc(center: c, radius: r + 2, startAngle: -.pi / 2, endAngle: -.pi / 2 + CGFloat(max(near, 0.02) * 2 * .pi), clockwise: false)
+            wedge.closeSubpath()
+            ctx.addPath(wedge)
+            ctx.clip()
+        }
         ctx.drawLinearGradient(g, start: CGPoint(x: c.x - r, y: c.y - r), end: CGPoint(x: c.x + r, y: c.y + r), options: [])
+        if charging && near > 0.6 {
+            ctx.setFillColor(rgb(255, 255, 255, 0.45 * (near - 0.6) / 0.4 * abs(sin(beat * .pi))))
+            ctx.fill(CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r))
+        }
         ctx.restoreGState()
         // "Straight ahead" notch at the top of the rim.
         ctx.setFillColor(white)
@@ -427,21 +470,40 @@ final class Hud {
             ctx.fillEllipse(in: CGRect(x: c.x - 3.5, y: c.y - 3.5, width: 7, height: 7))
             return
         }
-        // Needle: a two-tone gold dart that turns the way the player should turn.
         let onCourse = abs(angle) < 15
+        let glow = onCourse ? rgb(255, 240, 150, 0.95) : rgb(255, 170, 30, 0.7)
+        if style == "ribbon", ribbon(ctx, c, onCourse: onCourse, glow: glow) { return }
+        if style == "cutlass" {                       // closeness: pings from the centre, faster when nearer
+            ctx.saveGState()
+            ctx.addEllipse(in: CGRect(x: c.x - r + 6, y: c.y - r + 6, width: 2 * r - 12, height: 2 * r - 12))
+            ctx.clip()
+            for offset in [0.0, 0.5] where near > 0.05 {
+                let phase = (beat * 0.5 + offset).truncatingRemainder(dividingBy: 1)
+                let ring = CGFloat(6 + 34 * phase)
+                ctx.setStrokeColor(rgb(255, 232, 140, (0.25 + 0.7 * near) * (1 - phase)))
+                ctx.setLineWidth(CGFloat(2 + 3 * near))
+                ctx.strokeEllipse(in: CGRect(x: c.x - ring, y: c.y - ring, width: 2 * ring, height: 2 * ring))
+            }
+            ctx.restoreGState()
+            cutlass(ctx, c, onCourse: onCourse, glow: glow)
+            return
+        }
+        // Straight arrow: turns the way the player should turn.
         let radians = angle * .pi / 180
         func spin(_ x: Double, _ y: Double) -> CGPoint {
             CGPoint(x: c.x + CGFloat(x * cos(radians) - y * sin(radians)), y: c.y + CGFloat(x * sin(radians) + y * cos(radians)))
         }
         // Head and shaft, so the direction is unmistakable at phone size.
-        let tip = spin(0, -34), headR = spin(21, -5), headL = spin(-21, -5)
-        let neckR = spin(8, -5), neckL = spin(-8, -5), tailR = spin(8, 27), tailL = spin(-8, 27)
-        let tail = spin(0, 27), neck = spin(0, -5)
+        // Closeness: the arrow fills with bright gold from tail to tip as the chest gets nearer.
+        ctx.saveGState()
+        ctx.translateBy(x: c.x, y: c.y)
+        ctx.rotate(by: CGFloat(angle * .pi / 180))
         let outline = CGMutablePath()
-        outline.addLines(between: [tip, headR, neckR, tailR, tailL, neckL, headL])
+        outline.addLines(between: [CGPoint(x: 0, y: -34), CGPoint(x: 21, y: -5), CGPoint(x: 8, y: -5), CGPoint(x: 8, y: 27),
+                                   CGPoint(x: -8, y: 27), CGPoint(x: -8, y: -5), CGPoint(x: -21, y: -5)])
         outline.closeSubpath()
         ctx.saveGState()
-        ctx.setShadow(offset: .zero, blur: (onCourse ? 14 : 7) * unit, color: onCourse ? rgb(255, 240, 150, 0.95) : rgb(255, 170, 30, 0.7))
+        ctx.setShadow(offset: .zero, blur: (onCourse ? 14 : 7) * unit, color: glow)
         ctx.addPath(outline)
         ctx.setFillColor(ink)
         ctx.setStrokeColor(ink)
@@ -449,10 +511,148 @@ final class Hud {
         ctx.setLineJoin(.round)
         ctx.drawPath(using: .fillStroke)
         ctx.restoreGState()
+        ctx.addPath(outline)
+        ctx.clip()
+        ctx.setFillColor(rgb(120, 78, 22))
+        ctx.fill(CGRect(x: -22, y: -35, width: 44, height: 63))
+        let level = CGFloat(27 - 61 * (0.22 + 0.78 * near))
+        ctx.clip(to: CGRect(x: -22, y: level, width: 44, height: 27 - level))
         ctx.setFillColor(onCourse ? rgb(255, 248, 196) : goldHi)
-        ctx.addLines(between: [tip, headL, neckL, tailL, tail]); ctx.closePath(); ctx.fillPath()
+        ctx.fill(CGRect(x: -22, y: -35, width: 22, height: 63))
         ctx.setFillColor(onCourse ? rgb(255, 226, 120) : rgb(248, 176, 40))
-        ctx.addLines(between: [tip, headR, neckR, tailR, tail, neck]); ctx.closePath(); ctx.fillPath()
+        ctx.fill(CGRect(x: 0, y: -35, width: 22, height: 63))
+        if near > 0.6 {
+            ctx.setFillColor(rgb(255, 255, 255, 0.5 * (near - 0.6) / 0.4 * abs(sin(beat * .pi))))
+            ctx.fill(CGRect(x: -22, y: -35, width: 44, height: 63))
+        }
+        ctx.restoreGState()
+    }
+
+    /// Points down the Dijkstra path as [turn, metres]. Uses the runner's `ahead` when present, else works it out from `path`.
+    func pathAhead(_ s: Snapshot) -> [(Double, Double)] {
+        if let given = s.ahead?.value?.filter({ $0.count == 2 }), !given.isEmpty { return given.map { ($0[0], $0[1]) } }
+        guard let path = s.path?.filter({ $0.count == 2 }), path.count >= 2, let heading = s.heading,
+              let me = s.player, me.count == 2 else { return [] }
+        let mpu = s.mpu ?? 1.7
+        var nearest = 0, best = Double.infinity
+        for (i, p) in path.enumerated() {
+            let d = hypot(p[0] - me[0], p[1] - me[1])
+            if d < best { best = d; nearest = i }
+        }
+        let line = [me] + Array(path[(nearest + 1)...])
+        guard line.count >= 2 else { return [] }
+        return [12.0, 30.0, 50.0].map { want in
+            var left = want / mpu, q = line[line.count - 1]
+            for i in 1..<line.count {
+                let a = line[i - 1], b = line[i]
+                let seg = hypot(b[0] - a[0], b[1] - a[1])
+                if seg >= left && seg > 0 {
+                    q = [a[0] + (b[0] - a[0]) * left / seg, a[1] + (b[1] - a[1]) * left / seg]
+                    break
+                }
+                left -= seg
+            }
+            let dx = q[0] - me[0], dy = q[1] - me[1]
+            return (wrap(atan2(dx, -dy) * 180 / .pi - heading), hypot(dx, dy) * mpu)
+        }
+    }
+
+    /// Route ribbon: the next ~50 m of the path drawn from the player's point of view (up = straight ahead),
+    /// so the arrow bends where the path bends. Returns false when there is no path to draw.
+    func ribbon(_ ctx: CGContext, _ c: CGPoint, onCourse: Bool, glow: CGColor) -> Bool {
+        var points = [CGPoint.zero]
+        for (turn, meters) in bend {
+            let a = turn * .pi / 180
+            let p = CGPoint(x: meters * sin(a), y: -meters * cos(a))
+            if hypot(p.x - points[points.count - 1].x, p.y - points[points.count - 1].y) > 3 { points.append(p) }
+        }
+        guard points.count >= 2 else { return false }
+        let xs = points.map { $0.x }, ys = points.map { $0.y }
+        let spanX = xs.max()! - xs.min()!, spanY = ys.max()! - ys.min()!
+        let k = 50 / max(max(spanX, spanY), 22)
+        let mid = CGPoint(x: (xs.max()! + xs.min()!) / 2, y: (ys.max()! + ys.min()!) / 2)
+        points = points.map { CGPoint(x: c.x + ($0.x - mid.x) * k, y: c.y + ($0.y - mid.y) * k) }
+        let end = points[points.count - 1], before = points[points.count - 2]
+        let length = max(hypot(end.x - before.x, end.y - before.y), 0.001)
+        let ux = (end.x - before.x) / length, uy = (end.y - before.y) / length
+        let base = CGPoint(x: end.x - ux * 9, y: end.y - uy * 9)            // the head starts here
+        let line = CGMutablePath()
+        line.move(to: points[0])
+        for i in 1..<(points.count - 1) {
+            let next = i == points.count - 2 ? base : CGPoint(x: (points[i].x + points[i + 1].x) / 2, y: (points[i].y + points[i + 1].y) / 2)
+            line.addQuadCurve(to: next, control: points[i])
+        }
+        if points.count == 2 { line.addLine(to: base) }
+        let head = CGMutablePath()
+        head.addLines(between: [CGPoint(x: end.x + ux * 7, y: end.y + uy * 7),
+                                CGPoint(x: base.x - uy * 15, y: base.y + ux * 15),
+                                CGPoint(x: base.x + uy * 15, y: base.y - ux * 15)])
+        head.closeSubpath()
+        ctx.saveGState()
+        ctx.setLineCap(.round)
+        ctx.setLineJoin(.round)
+        ctx.setShadow(offset: .zero, blur: (onCourse ? 14 : 7) * unit, color: glow)
+        ctx.setStrokeColor(ink)
+        ctx.setFillColor(ink)
+        ctx.addPath(line); ctx.setLineWidth(16.5); ctx.strokePath()
+        ctx.addPath(head); ctx.setLineWidth(5); ctx.drawPath(using: .fillStroke)
+        ctx.setShadow(offset: .zero, blur: 0, color: nil)
+        ctx.setStrokeColor(onCourse ? rgb(255, 236, 150) : gold)
+        ctx.addPath(line); ctx.setLineWidth(11.5); ctx.strokePath()
+        ctx.setStrokeColor(onCourse ? rgb(255, 250, 214) : goldHi)
+        ctx.addPath(line); ctx.setLineWidth(4.5); ctx.strokePath()
+        ctx.setFillColor(onCourse ? rgb(255, 248, 196) : goldHi)
+        ctx.addPath(head); ctx.fillPath()
+        ctx.setFillColor(white)
+        ctx.setStrokeColor(ink)
+        ctx.setLineWidth(2)
+        ctx.addEllipse(in: CGRect(x: points[0].x - 5, y: points[0].y - 5, width: 10, height: 10))
+        ctx.drawPath(using: .fillStroke)
+        ctx.restoreGState()
+        return true
+    }
+
+    /// Cutlass: a pirate sword as the compass needle, blade towards the next waypoint.
+    func cutlass(_ ctx: CGContext, _ c: CGPoint, onCourse: Bool, glow: CGColor) {
+        ctx.saveGState()
+        ctx.translateBy(x: c.x, y: c.y)
+        ctx.rotate(by: CGFloat(angle * .pi / 180))
+        ctx.setLineJoin(.round)
+        ctx.setLineCap(.round)
+        let blade = CGMutablePath()
+        blade.move(to: CGPoint(x: -6, y: 6))
+        blade.addQuadCurve(to: CGPoint(x: 3, y: -36), control: CGPoint(x: -11, y: -20))
+        blade.addQuadCurve(to: CGPoint(x: 7, y: 6), control: CGPoint(x: 13, y: -12))
+        blade.closeSubpath()
+        ctx.saveGState()
+        ctx.setShadow(offset: .zero, blur: (onCourse ? 14 : 7) * unit, color: glow)
+        ctx.setFillColor(ink)
+        ctx.setStrokeColor(ink)
+        ctx.setLineWidth(5)
+        ctx.addPath(blade)
+        ctx.drawPath(using: .fillStroke)
+        ctx.restoreGState()
+        gradient(ctx, blade, onCourse ? [rgb(255, 252, 226), rgb(255, 226, 130)] : [rgb(250, 252, 255), rgb(168, 184, 214)],
+                 from: CGPoint(x: -8, y: 0), to: CGPoint(x: 10, y: 0))
+        ctx.setStrokeColor(ink)                               // grip, guard, knuckle bow, pommel
+        ctx.setFillColor(rgb(120, 66, 26))
+        ctx.setLineWidth(2.2)
+        ctx.addRect(CGRect(x: -4, y: 9, width: 9, height: 18))
+        ctx.drawPath(using: .fillStroke)
+        ctx.setStrokeColor(ink)
+        ctx.setLineWidth(7.5)
+        ctx.move(to: CGPoint(x: 13, y: 9)); ctx.addQuadCurve(to: CGPoint(x: 3, y: 30), control: CGPoint(x: 17, y: 28)); ctx.strokePath()
+        ctx.setStrokeColor(gold)
+        ctx.setLineWidth(3.5)
+        ctx.move(to: CGPoint(x: 13, y: 9)); ctx.addQuadCurve(to: CGPoint(x: 3, y: 30), control: CGPoint(x: 17, y: 28)); ctx.strokePath()
+        ctx.setFillColor(goldHi)
+        ctx.setStrokeColor(ink)
+        ctx.setLineWidth(2.2)
+        ctx.addPath(CGPath(roundedRect: CGRect(x: -14, y: 5, width: 29, height: 7), cornerWidth: 3, cornerHeight: 3, transform: nil))
+        ctx.drawPath(using: .fillStroke)
+        ctx.addEllipse(in: CGRect(x: -4.5, y: 25, width: 10, height: 10))
+        ctx.drawPath(using: .fillStroke)
+        ctx.restoreGState()
     }
 
     /// A token under the game's compass strip at the chest's bearing. It never covers the strip itself.
