@@ -283,20 +283,17 @@ short look at HUD and stream-overlay write-ups:
 
 Pieces, all in a 1280x720 design space scaled to the gameplay rectangle:
 
-- Card under the compass: gold compass dial with the arrow, title, active
-  chest, distance, turn wording (`STRAIGHT AHEAD` under 15°, `SLIGHT` under
-  45°, `TURN`, `BEHIND YOU` over 135°), chests-opened counter and one tick per
-  chest on the route. The plate stops at x=796 so it clears the storm banner.
-- Arrow styles (`--hud-style`): `ribbon` (default) draws the next ~50 m of the
-  Dijkstra path from the player's point of view, so it bends where the path
-  bends; `arrow` is one straight gold arrow to the next waypoint; `cutlass` is
-  a sword needle. Height is not shown: the map data has none.
-- Closeness: the distance counts down, grows and turns white inside 20 m. From
-  about 44 m in, a gold halo around the dial brightens and throbs faster. Each
-  style adds its own cue from 60 m in: `ribbon` fills the dial rim clockwise
-  while a ring closes in on the dial, `arrow` fills from tail to tip,
-  `cutlass` sends pings that speed up. At 5 m
-  every style switches to the token and `DIG HERE!`.
+- Card under the compass (his pick, 2026-11-27): gold compass dial with ONE solid 3D arrow, `PIRATE TOKEN HUNT`,
+  `NEXT CHEST`, distance, turn wording (`STRAIGHT AHEAD` under 15°, `SLIGHT` under 45°, `TURN`, `BEHIND YOU` over
+  135°) and a heat bar that fills over the leg. No chest counting (no N/total, no chest number, no tick row).
+  The plate stops at x=796 so it clears the storm banner.
+- Arrow: an extruded block arrow lying on a tilted ground plane (lit top, darker side walls, ground shadow),
+  rotated by `turn`, which aims at the path point 12 m ahead. `style` is accepted and ignored. Height is not
+  shown: no public source has chest heights for this map (see the shared research note).
+- Closeness: far off (60 m+) the arrow is long and skinny; nearer it gets shorter and stubbier and glows more.
+  The metres grow and pulse faster, and the card floods navy → gold → orange → hot orange (not red: red means
+  danger in Fortnite). Metres ease over ~0.3 s, snap on a new target, and hold dimmed when tracking drops.
+  Under 5 m it switches to the token and `DIG HERE!` / `OPEN IT!`.
 - Compass pin: a token under the strip at the chest's straight-line bearing.
   Measured on `gameplay.mp4`: N, NE, E, SE labels sit 106.9 px apart at 1280
   wide, so 2.375 px per degree (3.5625 at 1920), centre x 639. Beyond 80° it
@@ -304,7 +301,8 @@ Pieces, all in a 1280x720 design space scaled to the gameplay rectangle:
 - Minimap: the Dijkstra path and a chest token, clamped to the minimap edge
   when the chest is off it.
 - A chest reached or marked found plays a pop: ring, sparks, gold sweep and
-  `CHEST N OPENED!`. `--hud-scale` resizes the card (0.6 to 1.6).
+  `CHEST OPENED!`. `--hud-scale` resizes the card (0.6 to 1.6); use 1.4+ for the reel, since at
+  phone size viewers read the number but not the arrow's shape.
 
 The arrow, pin and minimap position are smoothed (0.10 s, 0.10 s and 0.22 s
 time constants) and redrawn at 60 Hz between the 20 Hz snapshots.
@@ -327,8 +325,8 @@ cd ../..
   --arrive-meters 16 --headless --record-fps 30 --record out/steering/hud-themed.mp4
 ```
 
-`hud_states.py` writes eight states, `styles.png` (three styles on the same
-three moments) and `closeness.png` (each style at 40, 15 and 6 m).
+`hud_states.py` writes eight states, `closeness.png` (40, 25, 15 and 6 m), `closeness-phone.png` and
+`approach-arrow.mp4` (60 m down to 4 m).
 
 ### Verified on recordings (2026-11-27)
 
