@@ -389,6 +389,16 @@ class LiveRoute:
         self.worker.close()
 
 
+def arrive_radius(target, last_reached, meters):
+    """How close counts as "at" the target. Normally ``meters``; when the chest just reached is less than two radii
+    away, he has to be clearly nearer this one (under 45% of the gap, never tighter than 4 m) so standing between two neighbouring spots
+    can't count both. On the first live test two spots 7.8 m apart were both "reached" 1.6 s apart this way."""
+    if last_reached is None:
+        return meters
+    gap = dist(target, last_reached) * params.METERS_PER_PX
+    return min(meters, max(4.0, .45 * gap)) if gap < 2 * meters else meters
+
+
 def path_ahead(player, yaw, path, marks=(12, 30, 50)):
     """[turn, metres] at points this far down the path; stops at the chest."""
     points, walked = [], 0.0
@@ -479,7 +489,7 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
                 if line.strip() in {"next", "back"}:
                     commands.append(line.strip())
         Thread(target=listen, daemon=True).start()
-    near_since = None
+    near_since = last_reached = None
     feed = Feed(capture, paced)
     replanned_until = float("-inf")
     sequence = -1
@@ -540,6 +550,8 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
                 elif command == "arrived" and result is None:
                     result = "reached"
             if result is not None:
+                if result in {"found", "reached"} and route.target() is not None:
+                    last_reached = route.target()
                 message = route.resolve(result)
                 if message:
                     route_key = near_since = None
@@ -562,7 +574,7 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
             now = monotonic()
             tracked = tracked and now - last_yaw <= .35 and now - last_pos <= .85
             if args.arrive_seconds > 0 and target is not None and player is not None and now - last_pos <= .85:
-                if dist(player, target) * params.METERS_PER_PX <= args.arrive_meters:
+                if dist(player, target) * params.METERS_PER_PX <= arrive_radius(target, last_reached, args.arrive_meters):
                     near_since = media_time if near_since is None else near_since
                     if media_time - near_since >= args.arrive_seconds:
                         commands.insert(0, "arrived")
