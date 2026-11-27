@@ -667,6 +667,7 @@ def main():
     parser.add_argument("--record-fps", type=int, choices=(15, 30, 60), default=15,
                         help="Output recording frame rate. The capture device determines the unique input frame rate.")
     parser.add_argument("--metrics", type=Path)
+    parser.add_argument("--hud-binary", type=Path, help="Use this prebuilt HUD instead of compiling window_hud.swift")
     parser.add_argument("--arrive-meters", type=float, default=8,
                         help="Move to the next chest after staying this close to the active one")
     parser.add_argument("--arrive-seconds", type=float, default=1.5,
@@ -710,7 +711,7 @@ def main():
         subprocess.run(["swiftc", str(Path(__file__).with_name("read_compass.swift")), "-o", binary], check=True)
         HUD_OPTIONS.update(scale=args.hud_scale, style=args.hud_style)
         drawn = args.hud or args.record or not args.headless
-        built = hud_binary() if drawn else None
+        built = (args.hud_binary or hud_binary()) if drawn else None
         run(args, binary, helper, built if args.hud else None, built)
 
 

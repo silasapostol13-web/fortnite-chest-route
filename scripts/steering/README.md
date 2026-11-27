@@ -40,6 +40,21 @@ cp scripts/steering/replay.html out/steering/index.html
 open out/steering/index.html
 ```
 
+## First live Remote Play test (2026-11-27, Wi-Fi)
+
+PS5 on Wi-Fi (84 Mbps), Mac on 6 GHz Wi-Fi, PS5 connection banner hidden, Remote Play app at 1080p / High,
+window full screen, squads match. `live.py --remote-play --hud --headless --metrics out/steering/live-test-2026-11-27.json`.
+- Locked on as soon as he landed; HUD drawn over the game (screenshot checked). Tracked 89.5% of frames after
+  the first lock (83.7% of the whole run), vs 291/2,996 frames with the banner on Nov 25.
+- About 30 fps between frames (p50 gap 0.03 s), 13 fps average over 82 s because of one 25 s capture stall.
+  Going full screen changed the window ID; capture dropped once and reopened by itself.
+- Arrow vs path 12 m ahead: median 0°, p90 3.6°, wrong way 0%. Frame to HUD p95 29 ms. Plans 44 ms p50, 70 ms p95
+  (slower than on the recording; still off the frame loop).
+- Five chests "reached" by the arrive rule in 32 s, two of them 1.6 s apart (spots next to each other): the
+  arrive rule may over-count clustered spots. He said: "the concept itself is working", not perfect yet.
+- Not checked: the Ctrl-Opt-N/B hot keys; the 3D arrow (this run used the 2D single-arrow build `dd0dffd` via
+  `--hud-binary`).
+
 ## Live re-planning (default since 2026-11-27)
 
 `live.py` now plans over every chest spot on the map (1,006 spots: regular, guaranteed, rare and buried)
