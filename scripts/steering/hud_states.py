@@ -2,7 +2,8 @@
 
     python scripts/steering/hud_states.py out/steering/gameplay.mp4 out/steering/hud-states
 
-Writes one PNG per state and a contact sheet. Uses the same Swift drawing code as the live HUD.
+Writes one PNG per state, a contact sheet, the arrow at four distances (closeness.png, and closeness-phone.png at
+about phone size) and approach-arrow.mp4 (60 m down to the chest). Uses the same Swift drawing code as the live HUD.
 """
 
 import argparse
@@ -30,13 +31,28 @@ STATES = {
 }
 
 
-STYLES = ("ribbon", "arrow", "cutlass")
-# The same three moments for every style: nearly straight, a right turn that bends back left, and chest behind.
-MOMENTS = (
-    {"turn": 8, "ahead": [[8, 12], [6, 30], [5, 50]], "bearing": 76, "meters": 61},
-    {"turn": 55, "ahead": [[55, 12], [38, 27], [12, 42]], "bearing": 84, "meters": 88},
-    {"turn": -150, "ahead": [[-150, 12], [-128, 29], [-105, 47]], "bearing": 300, "meters": 140, "target": [1060, 400], "path": None},
-)
+CLOSENESS = (40, 25, 15, 6)             # metres shown in closeness.png, one column each
+
+
+def approach(binary, frame, output, seconds=6.0, fps=30):
+    """Walking in from 60 m to 4 m with the arrow swinging a little, then a second of DIG HERE.
+    Top: the card at 2x. Bottom: the whole frame at phone width, to judge it at the size it is watched."""
+    encoder = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", "960x568",
+                                "-r", str(fps), "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", str(output)],
+                               stdin=subprocess.PIPE)
+    renderer = HudRenderer(binary)
+    for step in range(int((seconds + 1.5) * fps)):
+        t = step / fps
+        meters = round(60 - 56 * min(t / seconds, 1))
+        turn = 28 * np.cos(t * 1.4) * max(0.15, 1 - t / seconds)
+        image = renderer.composite(frame.copy(), {**BASE, "turn": turn, "bearing": 70 + turn, "meters": meters, "t": t})
+        canvas = np.zeros((568, 960, 3), np.uint8)
+        canvas[:340] = cv2.resize(image[20:190, 400:880], (960, 340), interpolation=cv2.INTER_CUBIC)
+        canvas[340:, 277:683] = cv2.resize(image, (406, 228), interpolation=cv2.INTER_AREA)
+        encoder.stdin.write(canvas.tobytes())
+    renderer.close()
+    encoder.stdin.close()
+    encoder.wait(timeout=60)
 
 
 def main():
@@ -68,35 +84,22 @@ def main():
     sheet = np.vstack([np.hstack(tiles[i:i + 2]) for i in range(0, len(tiles), 2)])
     cv2.imwrite(str(args.output / "sheet.png"), sheet)
 
-    # The three arrow styles side by side on the same moments: one row per style, one column per moment.
-    rows = []
-    for style in STYLES:
-        row = []
-        for changes in MOMENTS:
-            renderer = HudRenderer(binary)
-            for step in range(45):
-                image = renderer.composite(frame.copy(), {**BASE, **changes, "style": style, "t": step / 30})
-            renderer.close()
-            row.append(cv2.resize(image[30:170, 425:815], None, fx=1.6, fy=1.6, interpolation=cv2.INTER_CUBIC))
-        rows.append(np.hstack(row))
-        cv2.imwrite(str(args.output / f"style-{style}.png"), rows[-1])
-    cv2.imwrite(str(args.output / "styles.png"), np.vstack(rows))
-
-    # How each style shows the chest getting closer: 40 m, 15 m, 6 m. (At 5 m every style flips to DIG HERE.)
-    rows = []
-    for style in STYLES:
-        row = []
-        for meters in (40, 15, 6):
-            renderer = HudRenderer(binary)
-            for step in range(52):
-                image = renderer.composite(frame.copy(), {**BASE, **MOMENTS[0], "meters": meters, "style": style, "t": step / 30})
-            renderer.close()
-            row.append(cv2.resize(image[30:170, 425:815], None, fx=1.6, fy=1.6, interpolation=cv2.INTER_CUBIC))
-        rows.append(np.hstack(row))
-        cv2.imwrite(str(args.output / f"closeness-{style}.png"), rows[-1])
-    cv2.imwrite(str(args.output / "closeness.png"), np.vstack(rows))
+    # How the arrow shows the chest getting closer. The leg starts at 90 m so the heat bar has something to fill.
+    # (At 5 m it flips to DIG HERE.)
+    row = []
+    for meters in CLOSENESS:
+        renderer = HudRenderer(binary)
+        for step in range(75):
+            image = renderer.composite(frame.copy(), {**BASE, "turn": 8, "bearing": 78, "meters": 90 if step == 0 else meters,
+                                                      "t": step / 30})
+        renderer.close()
+        row.append(cv2.resize(image[30:178, 425:815], None, fx=1.6, fy=1.6, interpolation=cv2.INTER_CUBIC))
+    sheet = np.hstack(row)
+    cv2.imwrite(str(args.output / "closeness.png"), sheet)
+    # The same row with each card about as big as it is on a phone showing the full 16:9 frame.
+    cv2.imwrite(str(args.output / "closeness-phone.png"), cv2.resize(sheet, None, fx=.2, fy=.2, interpolation=cv2.INTER_AREA))
+    approach(binary, frame, args.output / "approach-arrow.mp4")
     print(f"Wrote {len(tiles)} states to {args.output}.")
-
 
 if __name__ == "__main__":
     main()
