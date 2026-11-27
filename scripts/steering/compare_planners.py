@@ -52,9 +52,9 @@ class Arm:
 
     def __init__(self, name, base, terrain):
         self.name, self.base, self.terrain = name, base, terrain
-        if name == "frozen":
+        if name.startswith("frozen"):
             from frozen import FrozenPlanner
-            self.tour = FrozenPlanner(base, terrain)
+            self.tour = FrozenPlanner(base, terrain, fresh_each_chest=name != "frozen_strict")
         else:
             self.tour = TourPlanner(base, terrain) if name == "tour" else None
         self.visited, self.opened = set(), 0
@@ -156,8 +156,11 @@ def summarise(arm, history, seconds):
     switches = [e for e in arm.events if e[1] == "switch" and (e[0], e[3]) not in nearby]   # detours counted apart
     still = [e for e in switches if displacement(history, e[0], 3.0) < 5.0]
     minutes = seconds / 60
+    every = [e for e in arm.events if e[1] == "switch"]            # every arrow change while its chest was still open
+    every_still = [e for e in every if displacement(history, e[0], 3.0) < 5.0]
     ms = np.asarray(arm.plan_ms) if arm.plan_ms else np.zeros(1)
-    out = {"switches": len(switches), "switches_per_min": round(len(switches) / minutes, 2),
+    out = {"arrow_changes": len(every), "arrow_changes_per_min": round(len(every) / minutes, 2),
+           "arrow_changes_still": len(every_still), "switches": len(switches), "switches_per_min": round(len(switches) / minutes, 2),
            "switches_moving_under_5m": len(still), "still_switches_per_min": round(len(still) / minutes, 2),
            "reached": sum(e[1] == "reached" for e in arm.events),
            "passed": sum(e[1] == "passed" for e in arm.events),
@@ -363,8 +366,8 @@ def main():
                     r = simulate(name, base, terrain, start, seconds=args.minutes * 60, wander=wander, seed=k)
                     r.update({"planner": name, "start": k, "wander": wander})
                     result["runs"].append(r)
-                    print(json.dumps({key: r[key] for key in ("planner", "start", "wander", "opened_2_5_10",
-                                                              "switches_per_min", "plan_ms_p50", "plan_ms_p95")}),
+                    print(json.dumps({key: r.get(key) for key in ("planner", "start", "wander", "opened_2_5_10",
+                                                              "arrow_changes_per_min", "arrow_changes_still", "reroutes", "switches_per_min", "plan_ms_p50", "plan_ms_p95")}),
                           flush=True)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, indent=1) + "\n")

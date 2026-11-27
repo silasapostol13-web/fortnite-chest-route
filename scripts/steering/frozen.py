@@ -5,6 +5,8 @@ chests. ``tour.py`` (one route through all ~1,000 spots) fixed that but opened ~
 must visit every outlier. This keeps the orienteering objective (nearby, dense chests first) and freezes it:
 
 * Reaching / passing a stop just moves on to the next one. Walking past any other spot drops it silently.
+* Finishing the arrow's chest re-picks the plan from there (the arrow moves on then anyway, so it's never a visible
+  flip); ``fresh_each_chest=False`` is the strict version that only extends.
 * Plan running short (under ``extend_below`` seconds left): EXTEND from the last stop, keeping every stop ahead.
 * Off route: he's losing time on the current leg. Time lost = travel time to the target now minus the best it has
   been on this leg (Dijkstra on the terrain graph). Over ``lost_seconds`` for ``off_seconds`` = re-plan from here.
@@ -33,9 +35,10 @@ from route.travel import cell_of  # noqa: E402
 
 class FrozenPlanner(TourPlanner):
 
-    def __init__(self, base, terrain, lost_seconds=5.0, off_seconds=2.5, extend_below=60.0, **kwargs):
+    def __init__(self, base, terrain, lost_seconds=5.0, off_seconds=2.5, extend_below=60.0, fresh_each_chest=True, **kwargs):
         super().__init__(base, terrain, **kwargs)
         self.lost_seconds, self.off_seconds, self.extend_below = lost_seconds, off_seconds, extend_below
+        self.fresh_each_chest = fresh_each_chest
         self.best_left = None       # least seconds-to-target seen on this leg
         self.extends = []           # (now, ms, stops added)
         self.next_extend = float("-inf")
@@ -93,6 +96,17 @@ class FrozenPlanner(TourPlanner):
                 self.detour = self.detour_home = None
                 self._new_leg(player)
         replanned = False
+        if self.fresh_each_chest and pin is None and before is not None and before in visited:
+            # He just finished the arrow's chest, so the arrow moves on anyway: pick the next stop fresh from here
+            # (invisible, not a reroute). This is what keeps the plan on chests near him: a plan made a minute ago
+            # can't know about the two chests he has since walked up to. Between chests the plan stays frozen.
+            started = time.monotonic()
+            fresh, _, _ = self.base.plan(player, visited, None)
+            self.solves.append(("next chest", (time.monotonic() - started) * 1000, len(fresh)))
+            if fresh:
+                self.order = list(fresh)
+                self.detour = self.detour_home = None
+                self._new_leg(player)
         if not self.order:
             self.order = self._solve(player, visited, reason="start" if before is None else "plan used up", now=now)
             replanned = before is not None

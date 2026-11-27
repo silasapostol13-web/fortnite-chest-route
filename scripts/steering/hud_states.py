@@ -4,7 +4,8 @@
 
 Writes one PNG per state, a contact sheet, the arrow at four distances (closeness.png, and closeness-phone.png at
 about phone size), approach-arrow.mp4 (60 m down to the chest) and the REROUTING moment (rerouting.png,
-rerouting-phone.png, rerouting-phone-small.png, rerouting-frames/ and rerouting.mp4). Uses the same Swift drawing
+rerouting-phone.png, rerouting-phone-small.png, rerouting-frames/ and rerouting.mp4), plus the pirate token up close (token-*.png;
+`--only token` writes just those). Uses the same Swift drawing
 code as the live HUD. `--only rerouting` writes just that last set.
 """
 
@@ -57,6 +58,26 @@ def approach(binary, frame, output, seconds=6.0, fps=30):
     renderer.close()
     encoder.stdin.close()
     encoder.wait(timeout=60)
+
+
+def token_frames(binary, frame, output):
+    """The pirate token up close: the card at 2x over the whole frame at phone width, at 40, 15 and 6 m,
+    and the pin under the compass strip (4x close-up beside the strip at its real size)."""
+    for meters in (40, 15, 6):
+        renderer = HudRenderer(binary)
+        for step in range(75):
+            image = renderer.composite(frame.copy(), {**BASE, "turn": 8, "bearing": 78, "meters": 90 if step == 0 else meters,
+                                                      "t": step / 30})
+        renderer.close()
+        canvas = np.zeros((568, 960, 3), np.uint8)
+        canvas[:340] = cv2.resize(image[20:190, 400:880], (960, 340), interpolation=cv2.INTER_CUBIC)
+        canvas[340:, 277:683] = cv2.resize(image, (406, 228), interpolation=cv2.INTER_AREA)
+        cv2.imwrite(str(output / f"token-{meters}m.png"), canvas)
+    x = int(round((958.5 + 8 * 3.5625) / 1.5))          # where the pin sits for a chest 8 degrees to the right
+    close = cv2.resize(image[8:68, x - 40:x + 40], (640, 480), interpolation=cv2.INTER_CUBIC)
+    strip = np.zeros((480, 640, 3), np.uint8)
+    strip[180:300] = image[0:120, 320:960]
+    cv2.imwrite(str(output / "token-compass.png"), np.hstack([close, strip]))
 
 
 # He leaves the route at 2.0 s: live.py sends `rerouting` for 1.5 s and `replanned` for 0.3 s, and the target changes.
@@ -133,7 +154,7 @@ def main():
     parser.add_argument("source", type=Path, help="Gameplay video or image")
     parser.add_argument("output", type=Path, help="Folder for the PNGs")
     parser.add_argument("--at", type=float, default=14, help="Seconds into the video")
-    parser.add_argument("--only", choices=["rerouting"], help="Write just this set")
+    parser.add_argument("--only", choices=["rerouting", "token"], help="Write just this set")
     args = parser.parse_args()
     capture = cv2.VideoCapture(str(args.source))
     capture.set(cv2.CAP_PROP_POS_MSEC, args.at * 1000)
@@ -146,6 +167,10 @@ def main():
     if args.only == "rerouting":
         rerouting(binary, args.source, args.output)
         print(f"Wrote the rerouting frames and clip to {args.output}.")
+        return
+    if args.only == "token":
+        token_frames(binary, frame, args.output)
+        print(f"Wrote the token frames to {args.output}.")
         return
     tiles = []
     for name, steps in STATES.items():
@@ -178,6 +203,7 @@ def main():
     cv2.imwrite(str(args.output / "closeness.png"), sheet)
     # The same row with each card about as big as it is on a phone showing the full 16:9 frame.
     cv2.imwrite(str(args.output / "closeness-phone.png"), cv2.resize(sheet, None, fx=.2, fy=.2, interpolation=cv2.INTER_AREA))
+    token_frames(binary, frame, args.output)
     approach(binary, frame, args.output / "approach-arrow.mp4")
     rerouting(binary, args.source, args.output)
     print(f"Wrote {len(tiles)} states to {args.output}.")

@@ -172,48 +172,106 @@ final class Hud {
         return p
     }
 
-    /// The pirate token: a gold doubloon. Large ones carry a skull and crossbones, small ones an X.
-    func coin(_ ctx: CGContext, _ c: CGPoint, _ r: CGFloat, skull: Bool) {
+    /// The Pirate Shop token, drawn from scratch in its style: an amber-gold coin with a bold white F, set on a
+    /// compass star (four long points, four short ones). `r` is the coin's radius; the long points reach 1.6 r (1.5 r on small ones, so the coin stays the main shape).
+    /// From 14 px up it also gets the broken bronze ring behind it, a cut-gem face and a shine.
+    func token(_ ctx: CGContext, _ c: CGPoint, _ r: CGFloat) {
+        let detail = r >= 14
+        let edge = max(1.1, r * 0.09)                   // dark outline that keeps it readable over sky and sand
+        func at(_ degrees: Double, _ d: CGFloat) -> CGPoint {
+            let a = degrees * .pi / 180
+            return CGPoint(x: c.x + d * CGFloat(cos(a)), y: c.y + d * CGFloat(sin(a)))
+        }
+        func ring(_ radius: CGFloat, _ from: Double, _ to: Double) -> CGPath {
+            let p = CGMutablePath()
+            p.addArc(center: c, radius: radius, startAngle: CGFloat(from * .pi / 180), endAngle: CGFloat(to * .pi / 180), clockwise: false)
+            return p
+        }
+        // Small ones keep only the four long points: with all eight they read as a settings gear.
+        let points: [(Double, CGFloat, CGFloat)] = (detail ? [45, 135, 225, 315].map { ($0, r * 1.24, r * 0.3) } : [])
+            + [0, 90, 180, 270].map { ($0, r * (detail ? 1.6 : 1.5), r * (detail ? 0.3 : 0.5)) }
+        let star = CGMutablePath()
+        for (a, reach, half) in points {
+            star.move(to: at(a - 90, half)); star.addLine(to: at(a, reach)); star.addLine(to: at(a + 90, half)); star.closeSubpath()
+        }
+        let disc = CGPath(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r), transform: nil)
+
+        // A soft gold glow, like the token's shine in the game, then the silhouette in ink under everything.
+        ctx.saveGState()
+        let glow = CGGradient(colorsSpace: space, colors: [rgb(255, 226, 110, detail ? 0.45 : 0.35), rgb(255, 198, 52, 0)] as CFArray, locations: nil)!
+        ctx.drawRadialGradient(glow, startCenter: c, startRadius: r * 0.9, endCenter: c, endRadius: r * (detail ? 2.3 : 1.9), options: [])
+        ctx.restoreGState()
         ctx.saveGState()
         ctx.setShadow(offset: CGSize(width: 0, height: -1 * unit), blur: 3 * unit, color: rgb(0, 0, 0, 0.6))
-        ctx.setFillColor(ink)
-        ctx.fillEllipse(in: CGRect(x: c.x - r - 1.6, y: c.y - r - 1.6, width: 2 * r + 3.2, height: 2 * r + 3.2))
+        ctx.setFillColor(ink); ctx.setStrokeColor(ink)
+        ctx.setLineJoin(.round); ctx.setLineCap(.butt)
+        if detail {
+            ctx.setLineWidth(r * 0.24 + 2 * edge)
+            ctx.addPath(ring(r * 1.3, 0, 360)); ctx.strokePath()
+        }
+        ctx.setLineWidth(2 * edge)
+        ctx.addPath(star); ctx.addPath(disc)
+        ctx.drawPath(using: .fillStroke)
         ctx.restoreGState()
-        let disc = CGPath(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r), transform: nil)
-        gradient(ctx, disc, [goldHi, gold, goldLo], from: CGPoint(x: c.x - r * 0.5, y: c.y - r), to: CGPoint(x: c.x + r * 0.5, y: c.y + r))
+
+        if detail {                                    // the broken ring behind the star
+            ctx.setLineCap(.butt)
+            ctx.setStrokeColor(rgb(142, 84, 26))
+            ctx.setLineWidth(r * 0.24)
+            ctx.addPath(ring(r * 1.3, 0, 360)); ctx.strokePath()
+            ctx.setStrokeColor(rgb(255, 214, 120))
+            ctx.setLineWidth(r * 0.1)
+            for (from, to) in [(-128.0, -52.0), (-30.0, 34.0), (58.0, 118.0), (150.0, 205.0)] {
+                ctx.addPath(ring(r * 1.37, from, to)); ctx.strokePath()
+            }
+        }
+        // Star points: one half pale, one half deep gold, like a compass rose.
+        for (a, reach, half) in points {
+            for (side, color) in [(-90.0, rgb(255, 244, 196)), (90.0, rgb(232, 150, 30))] {
+                ctx.move(to: c); ctx.addLine(to: at(a + side, half)); ctx.addLine(to: at(a, reach)); ctx.closePath()
+                ctx.setFillColor(color); ctx.fillPath()
+            }
+        }
+        // Coin: gold bezel, amber face.
+        gradient(ctx, disc, [rgb(255, 240, 170), gold, goldLo], from: CGPoint(x: c.x - r * 0.5, y: c.y - r), to: CGPoint(x: c.x + r * 0.5, y: c.y + r))
+        let fr = r * (detail ? 0.78 : 0.84)
+        let face = CGPath(ellipseIn: CGRect(x: c.x - fr, y: c.y - fr, width: 2 * fr, height: 2 * fr), transform: nil)
+        gradient(ctx, face, [rgb(255, 222, 96), rgb(255, 170, 26), rgb(232, 122, 12)],
+                 from: CGPoint(x: c.x - fr * 0.6, y: c.y - fr), to: CGPoint(x: c.x + fr * 0.6, y: c.y + fr))
+        if detail {
+            ctx.saveGState()
+            ctx.addPath(face); ctx.clip()
+            let cuts: [(Double, Double, Double, CGColor)] = [(200, 262, 0.2, rgb(255, 255, 255, 0.34)), (262, 318, 0.2, rgb(255, 255, 255, 0.14)),
+                (318, 20, 0.2, rgb(120, 50, 0, 0.10)), (20, 80, 0.2, rgb(120, 50, 0, 0.22)), (80, 140, 0.2, rgb(120, 50, 0, 0.12)),
+                (140, 200, 0.2, rgb(255, 255, 255, 0.18))]
+            for (from, to, inner, color) in cuts {     // gem cuts round the edge of the face
+                ctx.move(to: at(from, fr * 1.05)); ctx.addLine(to: at(to, fr * 1.05))
+                ctx.addLine(to: at((from + (to < from ? to + 360 : to)) / 2, fr * CGFloat(0.45 + inner)))
+                ctx.closePath(); ctx.setFillColor(color); ctx.fillPath()
+            }
+            ctx.setFillColor(rgb(255, 255, 255, 0.5))
+            ctx.fillEllipse(in: CGRect(x: c.x - fr * 0.66, y: c.y - fr * 0.74, width: fr * 0.36, height: fr * 0.22))
+            ctx.restoreGState()
+        }
         ctx.setStrokeColor(rgb(150, 78, 8, 0.9))
-        ctx.setLineWidth(max(0.8, r * 0.09))
-        ctx.strokeEllipse(in: CGRect(x: c.x - r * 0.8, y: c.y - r * 0.8, width: r * 1.6, height: r * 1.6))
-        let dark = rgb(92, 44, 6)
-        ctx.setStrokeColor(dark)
-        ctx.setFillColor(dark)
-        ctx.setLineCap(.round)
-        if !skull {
-            ctx.setLineWidth(max(1.6, r * 0.26))
-            let d = r * 0.36
-            ctx.strokeLineSegments(between: [CGPoint(x: c.x - d, y: c.y - d), CGPoint(x: c.x + d, y: c.y + d),
-                                             CGPoint(x: c.x + d, y: c.y - d), CGPoint(x: c.x - d, y: c.y + d)])
-            return
+        ctx.setLineWidth(max(0.8, r * 0.06))
+        ctx.addPath(face); ctx.strokePath()
+        // The F: chunky and leaning, white with a dark amber edge.
+        let u = r * (detail ? 0.66 : 0.8)
+        let shape: [(CGFloat, CGFloat)] = [(-0.42, -0.74), (0.5, -0.74), (0.5, -0.36), (0.0, -0.36), (0.0, -0.12), (0.36, -0.12),
+                                           (0.36, 0.22), (0.0, 0.22), (0.0, 0.76), (-0.42, 0.76)]
+        let letter = CGMutablePath()
+        for (i, (x, y)) in shape.enumerated() {
+            let p = CGPoint(x: c.x + (x - 0.04 - 0.1 * y) * u, y: c.y + y * u)
+            if i == 0 { letter.move(to: p) } else { letter.addLine(to: p) }
         }
-        ctx.setLineWidth(r * 0.15)
-        ctx.strokeLineSegments(between: [CGPoint(x: c.x - r * 0.5, y: c.y + r * 0.08), CGPoint(x: c.x + r * 0.5, y: c.y + r * 0.56),
-                                         CGPoint(x: c.x + r * 0.5, y: c.y + r * 0.08), CGPoint(x: c.x - r * 0.5, y: c.y + r * 0.56)])
-        ctx.fillEllipse(in: CGRect(x: c.x - r * 0.42, y: c.y - r * 0.56, width: r * 0.84, height: r * 0.74))
-        ctx.addPath(CGPath(roundedRect: CGRect(x: c.x - r * 0.24, y: c.y - r * 0.02, width: r * 0.48, height: r * 0.36),
-                           cornerWidth: r * 0.08, cornerHeight: r * 0.08, transform: nil))
-        ctx.fillPath()
-        ctx.setFillColor(goldHi)
-        for side in [-1.0, 1.0] {
-            ctx.fillEllipse(in: CGRect(x: c.x + CGFloat(side) * r * 0.18 - r * 0.11, y: c.y - r * 0.30, width: r * 0.22, height: r * 0.24))
-        }
-        ctx.move(to: CGPoint(x: c.x, y: c.y - r * 0.02))
-        ctx.addLine(to: CGPoint(x: c.x - r * 0.06, y: c.y + r * 0.10))
-        ctx.addLine(to: CGPoint(x: c.x + r * 0.06, y: c.y + r * 0.10))
-        ctx.fillPath()
-        ctx.setStrokeColor(goldHi)
-        ctx.setLineWidth(r * 0.04)
-        ctx.strokeLineSegments(between: [CGPoint(x: c.x - r * 0.08, y: c.y + r * 0.18), CGPoint(x: c.x - r * 0.08, y: c.y + r * 0.32),
-                                         CGPoint(x: c.x + r * 0.08, y: c.y + r * 0.18), CGPoint(x: c.x + r * 0.08, y: c.y + r * 0.32)])
+        letter.closeSubpath()
+        ctx.setLineJoin(.round)
+        ctx.setStrokeColor(rgb(128, 60, 4))
+        ctx.setLineWidth(max(1.2, r * 0.12))
+        ctx.addPath(letter); ctx.strokePath()
+        ctx.setFillColor(white)
+        ctx.addPath(letter); ctx.fillPath()
     }
 
     // MARK: frame
@@ -428,7 +486,7 @@ final class Hud {
                              : rgb(255, 255, 255, 0.15))
             ctx.fillPath()
         }
-        coin(ctx, CGPoint(x: 778.5, y: 150), 6.5 + (progress > 0.9 ? 1.2 * throb : 0), skull: false)
+        token(ctx, CGPoint(x: 779, y: 147.5), 11.5 + (progress > 0.9 ? 1.0 * throb : 0))
 
         dial(ctx, CGPoint(x: 492, y: 111), search: search || done, scanning: scanning, now: now, pop: popping ? pop : nil,
              reroute: rerouting ? re : nil)
@@ -542,7 +600,7 @@ final class Hud {
             ctx.setLineWidth(2.5)
             let ring = 30 + 4 * pulse
             ctx.strokeEllipse(in: CGRect(x: c.x - ring, y: c.y - ring, width: 2 * ring, height: 2 * ring))
-            coin(ctx, c, 24 + 1.5 * pulse, skull: true)
+            token(ctx, c, 17 + 1.0 * pulse)
             return
         }
         if scanning {                                 // radar sweep, no needle while tracking is stale
@@ -679,17 +737,13 @@ final class Hud {
         ctx.setLineJoin(.round)
         if outside {
             let d: CGFloat = pinAngle > 0 ? 1 : -1
-            ctx.move(to: CGPoint(x: x + d * 17, y: top + 13))
-            ctx.addLine(to: CGPoint(x: x + d * 10, y: top + 8))
-            ctx.addLine(to: CGPoint(x: x + d * 10, y: top + 18))
-        } else {
-            ctx.move(to: CGPoint(x: x, y: top))
-            ctx.addLine(to: CGPoint(x: x - 5, y: top + 7))
-            ctx.addLine(to: CGPoint(x: x + 5, y: top + 7))
-        }
-        ctx.closePath()
-        ctx.drawPath(using: .fillStroke)
-        coin(ctx, CGPoint(x: x, y: top + 13), 8, skull: false)
+            ctx.move(to: CGPoint(x: x + d * 23, y: top + 14.5))
+            ctx.addLine(to: CGPoint(x: x + d * 16, y: top + 9.5))
+            ctx.addLine(to: CGPoint(x: x + d * 16, y: top + 19.5))
+            ctx.closePath()
+            ctx.drawPath(using: .fillStroke)
+        }                                             // inside the strip's span the token's own top point is the pointer
+        token(ctx, CGPoint(x: x, y: top + 15.5), 10)
         ctx.restoreGState()
     }
 
@@ -741,7 +795,7 @@ final class Hud {
                         dy == 0 ? 1e9 : (dy > 0 ? inner.maxY - me.y : me.y - inner.minY) / abs(dy))
             pin = CGPoint(x: me.x + dx * k, y: me.y + dy * k)
         }
-        if drawn >= 0.95 { coin(ctx, pin, 7, skull: false) }
+        if drawn >= 0.95 { token(ctx, pin, 6) }
     }
 }
 

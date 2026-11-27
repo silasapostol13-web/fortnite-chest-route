@@ -272,26 +272,43 @@ class TourPlanner:
     def _nearby(self, player, now=None):
         """If an unopened chest spot is within ``nearby_meters`` and going there first costs at most
         ``nearby_detour_s`` extra, make it the next stop (cheapest insertion at the front, no re-solve).
-        Walking away from a nearby chest (twice the radius) puts it back where it was."""
+        Steadiness rules (PS5 part 2 replay: jitter at the 10 m edge made one chest flip in and out 5 times in 8 s
+        while he stood still): keep it until he is twice the radius away or another chest is clearly closer
+        (within the radius and 4 m nearer); a dropped chest can't come back for 8 s unless he's within 5 m of it;
+        and nothing is slotted in while he moves faster than running (gliding, sliding, a car: he can't stop)."""
         xy, here = self.base.xy, np.asarray(player)
         d = np.hypot(*(xy - here).T) * params.METERS_PER_PX
+        now = time.monotonic() if now is None else now
+        trail = getattr(self, "_trail", [])
+        trail = [(t, p) for t, p in trail if now - t <= 2.0] + [(now, tuple(player))]
+        self._trail = trail
+        span = now - trail[0][0]
+        if span >= 0.3:          # fixes can be 1.6 s apart: use what's there, else keep the last speed
+            self._speed = dist(trail[0][1], trail[-1][1]) * params.METERS_PER_PX / span
+        speed = getattr(self, "_speed", 0.0)
+        cooldown = getattr(self, "_cooldown", {})
+        self._cooldown = cooldown = {s: t for s, t in cooldown.items() if now < t}
         if self.detour is not None:
             if self.order and self.order[0] == self.detour:
                 away = d[self.detour]
-                if away <= self.nearby_meters:
-                    return                                    # still on his way to the nearby chest
-                if away <= 2 * self.nearby_meters and not any(
-                        d[i] <= self.nearby_meters and i != self.detour and self._nearby_ok(i) for i in np.argsort(d)[:8]):
-                    return                                    # drifting, nothing closer: keep it
-                spot = self.order.pop(0)                      # walked away, or another chest is right next to him
+                closer = any(d[i] <= self.nearby_meters and d[i] < away - 4 and i != self.detour and self._nearby_ok(i)
+                             for i in np.argsort(d)[:8])
+                if away <= 2 * self.nearby_meters and not closer:
+                    return                                    # on his way to it, or drifting: keep it
+                spot = self.order.pop(0)                      # walked away, or another chest is clearly closer
                 if self.detour_home is not None:              # back where it was (one not on the plan just goes)
                     self.order.insert(min(self.detour_home, len(self.order)), spot)
                 self.log.append((now, "dropped", spot))
+                cooldown[spot] = now + 8.0
             self.detour = self.detour_home = None
             self.leg_target = None
+        if speed > 1.3 * params.RUN_SPEED or not self.order:
+            return
         close = [int(i) for i in np.argsort(d)[:8] if d[i] <= self.nearby_meters]
         target = self.order[0]
-        close = [i for i in close if i != target and self._nearby_ok(i)]
+        # only chests nearer than the arrow's own chest (if that one is closer he's about to open it anyway)
+        close = [i for i in close if i != target and self._nearby_ok(i) and d[i] < d[target] - 2.0
+                 and (i not in cooldown or d[i] <= 5.0)]
         if not close:
             return
         if self.leg_target != target or self.leg_path is None:
