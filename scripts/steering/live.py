@@ -192,50 +192,97 @@ def next_waypoint(terrain, player, chest):
     path = terrain.path(player, chest)
     for point in path[1:-1]:
         if dist(player, point) >= params.CELL_PX * 1.6:
-            return point, len(path)
-    return chest, len(path)
+            return point, path
+    return chest, path
 
 
-def overlay(frame, chest_number, player, yaw, waypoint, target, note):
-    image = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_AREA)
-    gold, white = (69, 211, 255), (231, 244, 255)
-    panel = image[100:203, 477:803]
-    cv2.addWeighted(panel, .14, np.full_like(panel, (16, 23, 31)), .86, 0, dst=panel)
-    cv2.line(image, (477, 100), (803, 100), gold, 2, cv2.LINE_AA)
-    center = (524, 151)
-    cv2.circle(image, center, 31, gold, 1, cv2.LINE_AA)
-    text = "Tracking lost"
-    if target is None:
-        text = "Route complete"
-    elif player is not None and yaw is not None and waypoint is not None:
+# Where the game's own HUD sits in a 1920x1080 frame. The same numbers place the HUD's extras.
+MINIMAP = (1638, 36, 248, 240)          # x, y, width, height of the minimap crop
+MINIMAP_PLAYER = (122, 121)             # the player's spot inside that crop
+COMPASS = (958.5, 58, 3.5625)           # strip centre x, strip bottom y, pixels per degree (measured, see README)
+
+
+def hud_binary():
+    """Compile the Swift HUD once and reuse it until its source changes."""
+    source = Path(__file__).with_name("window_hud.swift")
+    binary = ROOT / "out" / "steering" / "window-hud"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    if not binary.exists() or binary.stat().st_mtime < source.stat().st_mtime:
+        with tempfile.TemporaryDirectory(dir=binary.parent) as build:
+            compiled = Path(build) / binary.name
+            subprocess.run(["swiftc", "-O", str(source), "-o", compiled], check=True)
+            compiled.replace(binary)
+    return binary
+
+
+class HudRenderer:
+    """Draw the live HUD onto recorded frames with the same Swift code that draws it on the game."""
+
+    def __init__(self, binary, size=(1280, 720)):
+        self.width, self.height = size
+        self.process = subprocess.Popen([binary, "--render", str(self.width), str(self.height)],
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+
+    def composite(self, image, snapshot):
+        self.process.stdin.write((json.dumps(snapshot) + "\n").encode())
+        self.process.stdin.flush()
+        count = self.width * self.height * 4
+        raw = self.process.stdout.read(count)
+        if len(raw) != count:
+            raise RuntimeError("HUD renderer exited")
+        layer = np.frombuffer(raw, dtype=np.uint8).reshape(self.height, self.width, 4)
+        rows = np.flatnonzero(layer[..., 3].any(axis=1))
+        if rows.size:                           # premultiplied "over", only on the rows the HUD touched
+            top, bottom = rows[0], rows[-1] + 1
+            part = layer[top:bottom].astype(np.uint16)
+            under = image[top:bottom].astype(np.uint16) * (255 - part[..., 3:]) // 255
+            image[top:bottom] = np.minimum(part[..., :3] + under, 255).astype(np.uint8)
+        return image
+
+    def close(self):
+        self.process.stdin.close()
+        self.process.wait(timeout=5)
+
+
+HUD_OPTIONS = {}                        # look-only settings from the command line: scale, style
+
+
+def hud_snapshot(index, chests, kinds, opened, player, yaw, waypoint, path, tracked, atlas_width):
+    """Everything the HUD draws for one moment. Old HUD builds only read chest, turn and meters."""
+    done = index >= len(chests)
+    snapshot = {"chest": min(index + 1, len(chests)), "total": len(chests), "opened": opened, "tracked": bool(tracked),
+                "done": done, "kind": "" if done else kinds[index], "mpu": params.METERS_PER_PX, **HUD_OPTIONS}
+    if tracked and not done:
+        target = chests[index]
         _, turn, _ = steering(player, yaw, waypoint)
-        meters = dist(player, target) * params.METERS_PER_PX
-        if meters <= 5:
-            cv2.circle(image, center, 5, gold, -1, cv2.LINE_AA)
-            text = "Search area"
-        else:
-            angle = np.radians(turn)
-            points = np.array([[0, -23], [16, 15], [0, 8], [-16, 15]])
-            transform = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
-            polygon = np.rint(points @ transform.T + center).astype("int32")
-            cv2.fillPoly(image, [polygon], gold, cv2.LINE_AA)
-            direction = "Ahead" if abs(turn) < 12 else "Right" if turn > 0 else "Left"
-            text = f"{direction}  |  chest ~{round(meters)} m"
-    cv2.putText(image, "PIRATE TOKEN HUNT", (572, 126), 0, .48, gold, 1, cv2.LINE_AA)
-    title = "ROUTE COMPLETE" if target is None else f"CHEST {chest_number:02d} / DIJKSTRA"
-    cv2.putText(image, title, (572, 152), 0, .56, white, 2, cv2.LINE_AA)
-    cv2.putText(image, text, (572, 174), 0, .50, white, 1, cv2.LINE_AA)
-    cv2.putText(image, note or "F Found   M Missing   Q Quit", (572, 190), 0, .38, gold, 1, cv2.LINE_AA)
-    return image
+        direct, _, _ = steering(player, yaw, target)
+        x, y, _, _ = MINIMAP
+        snapshot.update({
+            "turn": turn, "meters": round(dist(player, target) * params.METERS_PER_PX), "heading": yaw,
+            "bearing": direct, "player": [round(v, 1) for v in player], "target": list(target),
+            "path": [[round(px, 1), round(py, 1)] for px, py in path[:80]],
+            "mini": [x + MINIMAP_PLAYER[0], y + MINIMAP_PLAYER[1], atlas_width / 1500 / .99, x, y, x + MINIMAP[2], y + MINIMAP[3]],
+            "compass": list(COMPASS),
+        })
+    return snapshot
 
 
-def run(args, ocr_binary, window_helper=None, hud_binary=None):
+def overlay(frame, renderer, snapshot):
+    image = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_AREA)
+    return renderer.composite(image, snapshot)
+
+
+def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None):
     atlas = land(cv2.imread(str(planner_source.MAP_IMAGE)))
     terrain = LegPather(planner_source.MAP_IMAGE, planner_source.MAP_SIZE)
     script = (ROOT / "planner" / "film-route.js").read_text()
-    chests = json.loads(script.partition("=")[2].strip().removesuffix(";"))["chests"]
+    route = json.loads(script.partition("=")[2].strip().removesuffix(";"))
+    chests = route["chests"]
+    kinds = route.get("types") or ["chest"] * len(chests)
     if not 1 <= args.chest <= len(chests):
         raise SystemExit(f"Chest must be between 1 and {len(chests)}")
+    # Chests counted as opened: the ones before the starting chest, then every one reached or marked found.
+    opened = set(range(args.chest - 1 if args.opened is None else min(args.opened, len(chests))))
 
     marks = sorted((float(t), result) for t, result in args.mark)
     if window_helper is not None:
@@ -261,8 +308,10 @@ def run(args, ocr_binary, window_helper=None, hud_binary=None):
         ], stdin=subprocess.PIPE)
     process = subprocess.Popen([ocr_binary, "--stream"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                text=True, bufsize=1)
-    hud = subprocess.Popen([hud_binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
-                           bufsize=1) if hud_binary else None
+    hud = subprocess.Popen([hud_path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                           bufsize=1) if hud_path else None
+    renderer = HudRenderer(render_binary) if render_binary and (args.record or not args.headless) else None
+    path = []
     commands = []
     if hud:
         def listen():
@@ -276,7 +325,6 @@ def run(args, ocr_binary, window_helper=None, hud_binary=None):
     sequence = -1
     player = yaw = waypoint = route_key = None
     last_yaw = last_pos = next_head = next_pos = float("-inf")
-    note, note_until = "", 0
     rows = []
     processed = frames_written = 0
     last_frame = None
@@ -293,9 +341,8 @@ def run(args, ocr_binary, window_helper=None, hud_binary=None):
                 if feed.done or (args.duration and monotonic() - started >= args.duration):
                     break
                 if not args.headless and last_frame is not None:
-                    target = chests[index] if index < len(chests) else None
-                    cv2.imshow("Pirate Token Hunt | runtime steering",
-                               overlay(last_frame, index + 1, None, None, None, target, "Waiting for frames"))
+                    waiting = hud_snapshot(index, chests, kinds, len(opened), None, None, None, [], False, atlas.shape[1])
+                    cv2.imshow("Pirate Token Hunt | runtime steering", overlay(last_frame, renderer, waiting))
                     if cv2.waitKey(1) & 0xff == ord("q"):
                         break
                 continue
@@ -325,14 +372,16 @@ def run(args, ocr_binary, window_helper=None, hud_binary=None):
                 command = commands.pop(0)
                 if command == "back" and index > 0:
                     index -= 1
-                    note, note_until, route_key, near_since = f"Back to chest {index + 1}", media_time + 2, None, None
+                    route_key = near_since = None
+                    print(f"Back to chest {index + 1}.", flush=True)
                 elif command == "next" and result is None:
                     result = "skipped"
                 elif command == "arrived" and result is None:
                     result = "reached"
             if result is not None and index < len(chests):
-                note = f"Chest {index + 1} {result}"
-                note_until = media_time + 2
+                if result in {"found", "reached"}:
+                    opened.add(index)
+                print(f"Chest {index + 1} {result}.", flush=True)
                 index += 1
                 route_key = near_since = None
             target = chests[index] if index < len(chests) else None
@@ -341,7 +390,8 @@ def run(args, ocr_binary, window_helper=None, hud_binary=None):
                 key = cell_of(*player), index
                 if key != route_key:
                     tick = monotonic()
-                    waypoint, path_points = next_waypoint(terrain, player, target)
+                    waypoint, path = next_waypoint(terrain, player, target)
+                    path_points = len(path)
                     route_ms = (monotonic() - tick) * 1000
                     route_key, routed = key, True
             tracked = player is not None and waypoint is not None and target is not None and yaw is not None
@@ -354,8 +404,8 @@ def run(args, ocr_binary, window_helper=None, hud_binary=None):
                         commands.insert(0, "arrived")
                 else:
                     near_since = None
-            image = overlay(frame, index + 1, player if tracked else None, yaw, waypoint, target,
-                            note if media_time < note_until else "")
+            state = hud_snapshot(index, chests, kinds, len(opened), player, yaw, waypoint, path, tracked, atlas.shape[1])
+            image = overlay(frame, renderer, {**state, "t": media_time}) if renderer else None
             latency_ms = (monotonic() - arrived) * 1000
             if tracked and not reported_lock:
                 bearing, turn, _ = steering(player, yaw, waypoint)
@@ -364,11 +414,10 @@ def run(args, ocr_binary, window_helper=None, hud_binary=None):
                 reported_lock = True
             if hud and media_time >= next_hud_update:
                 next_hud_update = media_time + .05
-                snapshot = None
-                if tracked:
-                    _, turn, _ = steering(player, yaw, waypoint)
-                    snapshot = {"window": capture.window_id, "chest": index + 1, "turn": turn,
-                                "meters": round(dist(player, target) * params.METERS_PER_PX)}
+                snapshot = {**state, "window": capture.window_id}
+                if capture.crop:                # where the gameplay picture sits inside the captured window
+                    w, h, x, y = capture.crop
+                    snapshot["game"] = [x / capture.width, y / capture.height, w / capture.width, h / capture.height]
                 hud.stdin.write(json.dumps(snapshot) + "\n")
                 hud.stdin.flush()
             processed += 1
@@ -408,6 +457,8 @@ def run(args, ocr_binary, window_helper=None, hud_binary=None):
         if hud:
             hud.stdin.close()
             hud.wait(timeout=5)
+        if renderer:
+            renderer.close()
         if encoder:
             encoder.stdin.close()
             if encoder.wait() != 0:
@@ -445,6 +496,13 @@ def main():
                         help="Move to the next chest after staying this close to the active one")
     parser.add_argument("--arrive-seconds", type=float, default=1.5,
                         help="How long to stay near a chest before moving on; 0 turns auto-advance off")
+    parser.add_argument("--hud-scale", type=float, default=1.0,
+                        help="Card size, 0.6 to 1.6. Above about 1.1 it can touch the game's storm banner")
+    parser.add_argument("--hud-style", choices=("ribbon", "arrow", "cutlass"), default="ribbon",
+                        help="Arrow look: ribbon bends with the path's next turns, arrow is one straight gold arrow, "
+                             "cutlass is a pirate sword needle")
+    parser.add_argument("--opened", type=int,
+                        help="Chests already opened when the run starts (default: every chest before --chest)")
     parser.add_argument("--mark", nargs=2, action="append", default=[], metavar=("SECONDS", "found|missing"))
     args = parser.parse_args()
     if any(mark not in {"found", "missing"} for _, mark in args.mark):
@@ -475,11 +533,10 @@ def main():
     with tempfile.TemporaryDirectory(prefix="fortnite-live-") as tmp:
         binary = Path(tmp) / "ocr"
         subprocess.run(["swiftc", str(Path(__file__).with_name("read_compass.swift")), "-o", binary], check=True)
-        hud_binary = None
-        if args.hud:
-            hud_binary = Path(tmp) / "hud"
-            subprocess.run(["swiftc", str(Path(__file__).with_name("window_hud.swift")), "-o", hud_binary], check=True)
-        run(args, binary, helper, hud_binary)
+        HUD_OPTIONS.update(scale=args.hud_scale, style=args.hud_style)
+        drawn = args.hud or args.record or not args.headless
+        built = hud_binary() if drawn else None
+        run(args, binary, helper, built if args.hud else None, built)
 
 
 if __name__ == "__main__":
