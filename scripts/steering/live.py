@@ -187,12 +187,16 @@ def locate(frame, atlas, prior):
     return match(atlas, 0, 0)
 
 
-def next_waypoint(terrain, player, chest):
-    """Use the first grid waypoint far enough to clear position noise."""
+def next_waypoint(terrain, player, chest, meters=12.0):
+    """The point ``meters`` down the Dijkstra path (the chest itself when it's closer): what the arrow aims at.
+    Far enough ahead to clear position noise, close enough to follow bends around water."""
     path = terrain.path(player, chest)
-    for point in path[1:-1]:
-        if dist(player, point) >= params.CELL_PX * 1.6:
-            return point, path
+    left = meters / params.METERS_PER_PX
+    for a, b in zip([tuple(player)] + list(path[1:]), path[1:]):
+        step = dist(a, b)
+        if step >= left and step > 0:
+            return (a[0] + (b[0] - a[0]) * left / step, a[1] + (b[1] - a[1]) * left / step), path
+        left -= step
     return chest, path
 
 
