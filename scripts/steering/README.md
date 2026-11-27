@@ -135,9 +135,14 @@ cd /Users/silas/Developer/fortnite-chest-route
 ```
 
 The HUD appears once the compass and minimap are tracked, and disappears while
-tracking is stale. Stop the runner with Control-C in Terminal. The separate
-preview mode supports the **Found** and **Missing** keys. The click-through
-HUD has no keyboard controls. The capture helper favors an on-screen Remote
+tracking is stale. Stop the runner with Control-C in Terminal. The active chest
+moves on by itself after the player stays within `--arrive-meters` (default 8)
+of it for `--arrive-seconds` (default 1.5; 0 turns this off). While Remote Play
+keeps focus, **Control-Option-N** skips to the next chest and
+**Control-Option-B** goes back one (Carbon hot keys, no Accessibility
+permission). On the 36-second recording, chest 19 never came within 8 m (closest
+11 m) and the run stayed on it; with a 16 m radius it advanced once, at 29.8 s.
+The hot keys are untested on the console. The capture helper favors an on-screen Remote
 Play window, normalizes the stream's black bars, and retries a temporary
 capture disconnect.
 

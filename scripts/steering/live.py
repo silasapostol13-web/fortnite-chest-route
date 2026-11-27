@@ -261,7 +261,16 @@ def run(args, ocr_binary, window_helper=None, hud_binary=None):
         ], stdin=subprocess.PIPE)
     process = subprocess.Popen([ocr_binary, "--stream"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                text=True, bufsize=1)
-    hud = subprocess.Popen([hud_binary], stdin=subprocess.PIPE, text=True) if hud_binary else None
+    hud = subprocess.Popen([hud_binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                           bufsize=1) if hud_binary else None
+    commands = []
+    if hud:
+        def listen():
+            for line in hud.stdout:
+                if line.strip() in {"next", "back"}:
+                    commands.append(line.strip())
+        Thread(target=listen, daemon=True).start()
+    near_since = None
     feed = Feed(capture, paced)
     index = args.chest - 1
     sequence = -1
@@ -312,11 +321,20 @@ def run(args, ocr_binary, window_helper=None, hud_binary=None):
                 value, score = locate(frame, atlas, player)
                 if score >= .70:
                     player, last_pos, position_updated = value, arrived, True
+            while commands:
+                command = commands.pop(0)
+                if command == "back" and index > 0:
+                    index -= 1
+                    note, note_until, route_key, near_since = f"Back to chest {index + 1}", media_time + 2, None, None
+                elif command == "next" and result is None:
+                    result = "skipped"
+                elif command == "arrived" and result is None:
+                    result = "reached"
             if result is not None and index < len(chests):
                 note = f"Chest {index + 1} {result}"
                 note_until = media_time + 2
                 index += 1
-                route_key = None
+                route_key = near_since = None
             target = chests[index] if index < len(chests) else None
             route_ms = 0.0
             if player is not None and target is not None and arrived - last_pos < .85:
@@ -329,6 +347,13 @@ def run(args, ocr_binary, window_helper=None, hud_binary=None):
             tracked = player is not None and waypoint is not None and target is not None and yaw is not None
             now = monotonic()
             tracked = tracked and now - last_yaw <= .35 and now - last_pos <= .85
+            if args.arrive_seconds > 0 and target is not None and player is not None and now - last_pos <= .85:
+                if dist(player, target) * params.METERS_PER_PX <= args.arrive_meters:
+                    near_since = media_time if near_since is None else near_since
+                    if media_time - near_since >= args.arrive_seconds:
+                        commands.insert(0, "arrived")
+                else:
+                    near_since = None
             image = overlay(frame, index + 1, player if tracked else None, yaw, waypoint, target,
                             note if media_time < note_until else "")
             latency_ms = (monotonic() - arrived) * 1000
@@ -416,6 +441,10 @@ def main():
     parser.add_argument("--record-fps", type=int, choices=(15, 30, 60), default=15,
                         help="Output recording frame rate. The capture device determines the unique input frame rate.")
     parser.add_argument("--metrics", type=Path)
+    parser.add_argument("--arrive-meters", type=float, default=8,
+                        help="Move to the next chest after staying this close to the active one")
+    parser.add_argument("--arrive-seconds", type=float, default=1.5,
+                        help="How long to stay near a chest before moving on; 0 turns auto-advance off")
     parser.add_argument("--mark", nargs=2, action="append", default=[], metavar=("SECONDS", "found|missing"))
     args = parser.parse_args()
     if any(mark not in {"found", "missing"} for _, mark in args.mark):

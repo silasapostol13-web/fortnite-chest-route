@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import CoreGraphics
 
 struct Snapshot: Decodable {
@@ -81,6 +82,25 @@ func update(_ snapshot: Snapshot?) {
         panel.orderFrontRegardless()
         FileHandle.standardError.write(Data("Live waypoint HUD shown on gameplay.\n".utf8))
     }
+}
+
+// Control-Option-N skips to the next chest, Control-Option-B goes back one. Carbon hot keys
+// fire while Remote Play keeps focus and need no Accessibility permission.
+var hotKeys: [EventHotKeyRef?] = []
+var pressed = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
+    var key = EventHotKeyID()
+    GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
+                      MemoryLayout<EventHotKeyID>.size, nil, &key)
+    print(key.id == 1 ? "next" : "back")
+    fflush(stdout)
+    return noErr
+}, 1, &pressed, nil, nil)
+for (id, code) in [(UInt32(1), kVK_ANSI_N), (UInt32(2), kVK_ANSI_B)] {
+    var ref: EventHotKeyRef?
+    RegisterEventHotKey(UInt32(code), UInt32(controlKey | optionKey), EventHotKeyID(signature: OSType(0x46544e54), id: id),
+                        GetApplicationEventTarget(), 0, &ref)
+    hotKeys.append(ref)
 }
 
 DispatchQueue.global(qos: .userInitiated).async {
