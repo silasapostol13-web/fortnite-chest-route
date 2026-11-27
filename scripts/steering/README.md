@@ -55,7 +55,7 @@ window full screen, squads match. `live.py --remote-play --hud --headless --metr
 - Not checked: the Ctrl-Opt-N/B hot keys; the 3D arrow (this run used the 2D single-arrow build `dd0dffd` via
   `--hud-binary`).
 
-## Live re-planning (default since 2026-11-27)
+## Live re-planning (`--route live`, the default until 2026-11-27 evening)
 
 `live.py` now plans over every chest spot on the map (1,006 spots: regular, guaranteed, rare and buried)
 instead of the fixed 33-chest film list. About once a second, in a background thread, it answers: from where
@@ -83,6 +83,41 @@ What this doesn't prove: in this clip he was playing without the overlay, so the
 the other way round. Whether following the arrow opens more chests needs a real run over Remote Play. Fixed
 along the way: holding the current target used to collapse the plan to that one chest (`ils_best` dropped
 every candidate when the player's other edges were masked); it now plans onward from the held chest.
+
+## Frozen route (`--route frozen`, DEFAULT since 2026-11-27 evening, `frozen.py`)
+
+Plans the most chests in the next 2 minutes (same orienteering solver as `--route live`), then follows that plan like
+a maps app instead of re-solving every second:
+
+- **Between chests the plan doesn't change.** It is re-solved only when he is losing time on the leg (Dijkstra seconds
+  to the arrow's chest now minus the best this leg, over 5 s for 2.5 s: standing still in a fight loses nothing), or
+  the plan runs out. Every re-solve after the first logs "Rerouting" and the HUD shows REROUTING, but only if the
+  arrow's chest changed.
+- **When a chest is finished** the next stop is picked fresh from where he is. The arrow moves on then anyway, so it's
+  never a visible flip, and it is why plans stay on chests near him (a 1-minute-old plan once sent him 153 m past two
+  chests 29 and 31 m away).
+- **CHEST NEARBY:** an unopened chest within 8 m, at most 60% as far as the arrow's chest, and at most 6 s of detour is
+  slotted in first. It is kept until he is 16 m away or another chest is clearly closer; a dropped one can't come back
+  for 8 s (unless within 5 m); nothing is slotted in while he moves faster than 1.3x running (gliding, cars).
+- Walking past a chest spot drops it silently (never a reroute). Back pins a chest first and pauses rerouting.
+
+Measured vs `--route live` (`compare_planners.py`, `out/steering/compare-v4-*.json`):
+
+| | live (old default) | frozen |
+|---|---|---|
+| Drift test (his worry: wobble between two chests 25-50 m apart, 120 pairs): pairs where the arrow changed | 50.8% (107 changes) | **42.5% (74)** |
+| Sim, follows the arrow, 12 starts: chests at 2 / 5 / 10 min | 22.5 / 52.2 / 98.6 | 22.0 / 51.8 / **100.2** |
+| Sim, wanders off 20% of the time: chests at 10 min | **99.4** | 97.0 |
+| Sim: chests within 8 m he was left standing next to (per 10 min) | 7.3 / 12.8 | **2.2 / 2.2** |
+| Sim, wandering: arrow changes while still, per run | 1.7 | **0.8** |
+| Replay of his real positions (7.5 min, not following any arrow): changes while still / all changes | 4 / **19** | **2** / 24 |
+| Reroutes (replay) | n/a | 8, every one after he moved 44-131 m in 10 s |
+| Plan time p50 / p95 (off the frame loop) | 36 / 57 ms | 32 / 47 ms |
+
+Caveats: chests are a tie on average, but frozen's worst start is lower (77-78 vs 89-90 per 10 min: one early
+different choice sends it to another area). The extra "all changes" on the replay are CHEST NEARBY moments where he
+walked up to chests. End-to-end `live.py` on PS5 part 3 (recording): locks on, reaches chests, 0 reroutes. **Not yet
+proven in a live game** (no PS5 until he's home).
 
 ## Full-map route prototype (`--route tour`, 2026-11-27, NOT the default)
 

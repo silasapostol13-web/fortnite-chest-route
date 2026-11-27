@@ -689,7 +689,7 @@ def main():
                         metavar="W:H:X:Y", help="Gameplay rectangle in the 1920px-wide captured window")
     parser.add_argument("--start", type=float, default=0)
     parser.add_argument("--duration", type=float)
-    parser.add_argument("--route", choices=("frozen", "live", "tour", "film"), default="live",
+    parser.add_argument("--route", choices=("frozen", "live", "tour", "film"), default="frozen",
                         help="frozen: plan the most chests in the next --budget seconds once and follow it, re-planning only "
                              "when you lose time on the route (default); live: re-plan every second; tour (prototype): one "
                              "route through every chest spot; film: the fixed 33-chest list")

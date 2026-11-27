@@ -74,6 +74,10 @@ class FrozenPlanner(TourPlanner):
     def _nearby_ok(self, spot):
         return spot not in self._visited
 
+    def _set_leg(self, player, target):
+        super()._set_leg(player, target)
+        self.best_left = None       # the off-route clock measures the new target from here (cold review bug 1)
+
     def _to_target(self, player, target):
         _, seconds = self.terrain.graph.dijkstra(cell_of(*player), cell_of(*self.base.xy[target]))
         return seconds
@@ -109,8 +113,12 @@ class FrozenPlanner(TourPlanner):
                 self._new_leg(player)
         if not self.order:
             self.order = self._solve(player, visited, reason="start" if before is None else "plan used up", now=now)
-            replanned = before is not None
+            replanned = before is not None and before not in visited   # used up by finishing it: not a reroute
             self._new_leg(player)
+            if self.order and pin is None:
+                self._nearby(player, now)            # same tick, so the first arrow already points at a chest beside him
+                if self.leg_target != self.order[0]:
+                    self._new_leg(player)
         elif pin is None:
             if self.leg_target != self.order[0] or self.leg_path is None:
                 self._new_leg(player)
@@ -122,6 +130,10 @@ class FrozenPlanner(TourPlanner):
                     self.order = self._solve(player, visited, reason="off route", now=now)
                     replanned = True
                     self._new_leg(player)
+                    if self.order:
+                        self._nearby(player, now)
+                        if self.leg_target != self.order[0]:
+                            self._new_leg(player)
             else:
                 self.off_since = None
             if not replanned and now >= self.next_extend and self._seconds_left(player) < self.extend_below:

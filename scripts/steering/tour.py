@@ -185,9 +185,10 @@ class TourPlanner:
     """Same inputs as ``replan.Planner.plan``; keeps one full-map order and only re-solves on leaving it."""
 
     def __init__(self, base: Planner, terrain, off_meters=25.0, off_seconds=3.0, near_stops=3,
-                 solve_seconds=2.0, reroute_seconds=2.0, nearby_meters=10.0, nearby_detour_s=6.0):
+                 solve_seconds=2.0, reroute_seconds=2.0, nearby_meters=8.0, nearby_detour_s=6.0):
         self.base, self.terrain = base, terrain
         self.nearby_meters, self.nearby_detour_s = nearby_meters, nearby_detour_s
+        self.nearby_ratio = 0.6
         self.detour = None          # a chest slotted in first because he's right next to it ("CHEST NEARBY")
         self.detour_home = None     # where it sat in the route, to put it back if he walks away from it
         self.reroutes = []          # (now, reason, player) for every re-plan after the first
@@ -244,7 +245,7 @@ class TourPlanner:
                     rerouted = True
             else:
                 self.off_since = None
-        if not rerouted and self.order:
+        if not rerouted and self.order and pin is None:
             self._nearby(player, now)
         if rerouted:
             self.reroute_reason = None
@@ -255,6 +256,12 @@ class TourPlanner:
             self.off_since = None
         # REROUTING only when the arrow's chest actually changed
         return self.order, rerouted and before is not None and bool(self.order) and self.order[0] != before
+
+    def _set_leg(self, player, target):
+        """Start a new leg to ``target``: its path, and a fresh off-route clock (frozen.py also resets its best time)."""
+        self.leg_target = target
+        self.leg_path = self.terrain.path(player, tuple(self.base.xy[target]))
+        self.off_since = None
 
     def _nearby_ok(self, spot):
         """Which spots may be slotted in as CHEST NEARBY: the tour holds every spot, so any still on it."""
@@ -306,14 +313,13 @@ class TourPlanner:
             return
         close = [int(i) for i in np.argsort(d)[:8] if d[i] <= self.nearby_meters]
         target = self.order[0]
-        # only chests nearer than the arrow's own chest (if that one is closer he's about to open it anyway)
-        close = [i for i in close if i != target and self._nearby_ok(i) and d[i] < d[target] - 2.0
+        # only chests clearly nearer than the arrow's own chest (drift test: 'slightly nearer' flipped the arrow while he wobbled)
+        close = [i for i in close if i != target and self._nearby_ok(i) and d[i] <= self.nearby_ratio * d[target]
                  and (i not in cooldown or d[i] <= 5.0)]
         if not close:
             return
         if self.leg_target != target or self.leg_path is None:
-            self.leg_target = target
-            self.leg_path = self.terrain.path(player, tuple(xy[target]))
+            self._set_leg(player, target)
         to_target = self._seconds_along(player, self.leg_path)
         best, cost = None, self.nearby_detour_s
         for c in close:
@@ -327,9 +333,7 @@ class TourPlanner:
             self.order.insert(0, best)
             self.detour = best
             self.log.append((now, "nearby", best))
-            self.leg_target = best
-            self.leg_path = self.terrain.path(player, tuple(xy[best]))
-            self.off_since = None
+            self._set_leg(player, best)
 
 
 class TourWorker:
