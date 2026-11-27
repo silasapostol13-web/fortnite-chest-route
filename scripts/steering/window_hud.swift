@@ -52,9 +52,9 @@ let ink = rgb(22, 12, 4), navy = rgb(9, 16, 36), white = rgb(255, 255, 255)
 let display = "Futura-CondensedExtraBold", label = "AvenirNextCondensed-HeavyItalic"
 let space = CGColorSpace(name: CGColorSpace.sRGB)!
 
-/// Closeness colour, cold to hot: pale steel far off, gold, orange, ember red right at the chest. `flash` lifts it towards pale yellow.
+/// Closeness colour, cold to hot: pale gold far off, gold, orange, hot orange right at the chest (not red: red means danger in Fortnite). `flash` lifts it towards pale yellow.
 func heatColor(_ h: Double, _ a: Double = 1, flash: Double = 0, shade: Double = 1) -> CGColor {
-    let stops: [[Double]] = [[0, 214, 226, 250], [0.3, 255, 222, 70], [0.65, 255, 150, 30], [0.85, 255, 96, 24], [1, 240, 40, 30]]
+    let stops: [[Double]] = [[0, 236, 228, 200], [0.3, 255, 222, 70], [0.65, 255, 160, 30], [0.85, 255, 122, 18], [1, 255, 92, 8]]
     let x = clamp(h, 0, 1)
     var i = 1
     while i < stops.count - 1 && stops[i][0] < x { i += 1 }
@@ -297,7 +297,7 @@ final class Hud {
         ctx.restoreGState()
         gradient(ctx, plate, [rgb(16, 30, 66, 0.45), rgb(34, 14, 62, 0.45)], from: CGPoint(x: 476, y: 68), to: CGPoint(x: 796, y: 150))
         gradient(ctx, slab(476 + 9.5, 68, 786 + 9.5, 72, lean: 0.5), [goldHi, gold, goldLo], from: CGPoint(x: 476, y: 0), to: CGPoint(x: 796, y: 0))
-        let flood = pow(near, 1.15) * (scanning ? 0.5 : 1)   // closeness: the whole plate floods from navy to amber to red
+        let flood = pow(near, 1.15) * (scanning ? 0.5 : 1)   // closeness: the whole plate floods from navy to amber to hot orange
         if flood > 0.01 && !popping {
             ctx.addPath(plate)
             ctx.setFillColor(heatColor(near, 0.9 * flood, flash: 0.12 * near * throb, shade: 0.78))
@@ -363,7 +363,7 @@ final class Hud {
                  color: rerouted ? goldHi : rgb(150, 172, 220), outline: 0.9, kern: 0.6)
         }
 
-        // Heat bar: fills towards the token as this leg is covered, gold at the start and ember red at the end.
+        // Heat bar: fills towards the token as this leg is covered, gold at the start and hot orange at the end.
         let segments = 14
         let step = (768.0 - 550.0) / Double(segments)
         ctx.addPath(slab(547.5, 145.5, 770.5, 154.5, lean: 2))
@@ -481,7 +481,7 @@ final class Hud {
         // lit top face, darker side walls, soft shadow. It turns about the vertical axis: away from the viewer is
         // where the player faces, and it points the way to turn. There is no up/down: the map has no heights.
         // Closeness changes its shape and its glow: long and skinny at 60 m or more, short, stubby and thick
-        // right at the chest, with a halo that grows and heats up from gold to ember red.
+        // right at the chest, with a halo that grows and heats up from gold to hot orange.
         let onCourse = abs(angle) < 15
         let k = near * near * (3 - 2 * near)                  // smoothstep, so the shape change is spread over the approach
         func mix(_ far: Double, _ close: Double) -> Double { far + (close - far) * k }
@@ -558,7 +558,7 @@ final class Hud {
             ctx.drawPath(using: .fillStroke)
             ctx.restoreGState()
         }
-        for wall in walls {                                   // walls: deep gold far away, ember red up close
+        for wall in walls {                                   // walls: deep gold far away, hot orange up close
             ctx.addPath(wall.path)
             ctx.setFillColor(heatColor(max(near, 0.3), shade: wall.light * (0.8 + 0.2 * near)))
             ctx.fillPath()
