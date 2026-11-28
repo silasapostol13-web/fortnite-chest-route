@@ -5,7 +5,7 @@ TAKE="$(cat "$STATE/take" 2>/dev/null)"
 for name in record overlay; do
   pid="$(cat "$STATE/$name.pid" 2>/dev/null)"
   [ -n "$pid" ] && kill -INT "$pid" 2>/dev/null
-  for i in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+  for i in $(seq 1 40); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
   rm -f "$STATE/$name.pid"
 done
 [ -n "$TAKE" ] || { echo "Nothing was recording."; exit 0; }

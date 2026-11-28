@@ -143,4 +143,8 @@ class FrozenPlanner(TourPlanner):
                 if self.leg_target != self.order[0]:
                     self._new_leg(player)
         after = self.order[0] if self.order else None
+        if getattr(self, "_speed", 0.0) > 1.3 * params.RUN_SPEED:
+            # Skydiving, gliding or in a car he's always "losing time" on the leg, so re-plans fire every few
+            # seconds: let the arrow follow quietly, no REROUTING card (live test 2026-11-28 flashed it all the drop).
+            return self.order, False
         return self.order, replanned and after != before

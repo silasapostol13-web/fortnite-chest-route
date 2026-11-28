@@ -16,12 +16,14 @@ func say(_ s: String) { FileHandle.standardError.write(Data((s + "\n").utf8)) }
 
 var out: URL?
 var windowID: CGWindowID?
+var hudPID: pid_t = -1
 var fps = 60
 var args = CommandLine.arguments.dropFirst().makeIterator()
 while let a = args.next() {
     switch a {
     case "--out": out = URL(fileURLWithPath: args.next() ?? "")
     case "--window-id": windowID = CGWindowID(args.next() ?? "") ?? nil
+    case "--hud-pid": hudPID = pid_t(args.next() ?? "") ?? -1
     case "--fps": fps = Int(args.next() ?? "") ?? 60
     default: say("unknown argument \(a)"); exit(2)
     }
@@ -55,8 +57,12 @@ Task {
             }
             .max { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }
         guard let target else { say("No PS Remote Play window on screen. Open Remote Play first."); exit(1) }
+        // The HUD panel is hidden until the overlay locks on (e.g. pre-game island), and a window filter is fixed at
+        // start, so capture by APPLICATION: windows the HUD shows later are recorded too.
+        let hudApps = content.applications.filter { $0.applicationName.contains("window-hud")
+            || $0.bundleIdentifier.contains("window-hud") || $0.processID == hudPID }
         let hud = content.windows.filter { ($0.owningApplication?.applicationName ?? "").contains("window-hud") }
-        if hud.isEmpty { say("Note: no HUD window found; recording the game only.") }
+        if hudApps.isEmpty { say("Note: no HUD app found; recording the game only.") }
         let center = CGPoint(x: target.frame.midX, y: target.frame.midY)
         guard let display = content.displays.first(where: { $0.frame.contains(center) }) ?? content.displays.first else {
             say("No display."); exit(1)
@@ -64,7 +70,8 @@ Task {
         let scale = NSScreen.screens.first {
             ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == display.displayID
         }?.backingScaleFactor ?? 2
-        let filter = SCContentFilter(display: display, including: [target] + hud)
+        let filter = hudApps.isEmpty ? SCContentFilter(display: display, including: [target] + hud)
+            : SCContentFilter(display: display, including: [target.owningApplication!] + hudApps, exceptingWindows: [])
         let config = SCStreamConfiguration()
         let rect = CGRect(x: target.frame.minX - display.frame.minX, y: target.frame.minY - display.frame.minY,
                           width: target.frame.width, height: target.frame.height)
@@ -89,7 +96,7 @@ Task {
         let recording = SCRecordingOutput(configuration: rc, delegate: recorder)
         try stream.addRecordingOutput(recording)
         try await stream.startCapture()
-        say("Capturing \(target.owningApplication?.applicationName ?? "?") window \(target.windowID) at \(config.width)x\(config.height), \(fps) fps, HUD windows \(hud.count), sound on -> \(out.path)")
+        say("Capturing \(target.owningApplication?.applicationName ?? "?") window \(target.windowID) at \(config.width)x\(config.height), \(fps) fps, HUD apps \(hudApps.count) (windows now \(hud.count)), sound on -> \(out.path)")
     } catch {
         say("Could not start recording: \(error.localizedDescription)")
         say("If this mentions permission: System Settings > Privacy & Security > Screen & System Audio Recording > turn on Terminal.")

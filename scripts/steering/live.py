@@ -6,6 +6,7 @@ import json
 from math import dist
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -718,6 +719,10 @@ def main():
                         help="Chests already opened when the run starts (default: every chest before --chest)")
     parser.add_argument("--mark", nargs=2, action="append", default=[], metavar=("SECONDS", "found|missing"))
     args = parser.parse_args()
+    # A script that starts us with '&' (scripts/shoot/start.sh) leaves SIGINT ignored, so STOP's kill -INT did
+    # nothing and the metrics were never written (live test 2026-11-28). Re-arm it, and treat SIGTERM the same.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     if any(mark not in {"found", "missing"} for _, mark in args.mark):
         parser.error("--mark result must be found or missing")
     if args.input and args.record and Path(args.input).resolve() == args.record.resolve():

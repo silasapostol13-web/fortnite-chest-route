@@ -31,7 +31,7 @@ for i in $(seq 1 60); do                       # wait for the HUD window (first 
 done
 sleep 2
 if [ -n "${WINDOW_ID:-}" ]; then RPICK=(--window-id "$WINDOW_ID"); else RPICK=(); fi
-"$BIN" --out "$TAKE.mov" "${RPICK[@]}" --fps 60 < /dev/null > /dev/null 2> "$TAKE-record.log" &
+"$BIN" --out "$TAKE.mov" ${RPICK[@]+"${RPICK[@]}"} --hud-pid "$(pgrep -f out/steering/window-hud | head -1)" --fps 60 < /dev/null > /dev/null 2> "$TAKE-record.log" &
 echo $! > "$STATE/record.pid"
 sleep 3
 if ! kill -0 "$(cat "$STATE/record.pid")" 2>/dev/null; then echo "Recorder didn't start:"; cat "$TAKE-record.log"; exit 1; fi
