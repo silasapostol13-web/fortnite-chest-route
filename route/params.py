@@ -18,8 +18,23 @@ CHEST_STOP_S = 2.0  # s per chest: ~0.4 s open (SOURCED, Epic forum) + ~1.6 s to
 
 # --- Spawn odds -------------------------------------------------------------
 GUARANTEED_SHARE = 243 / 901   # SOURCED: 901 spawn points, 243 guaranteed (Treasure Hunters guides)
-RANDOM_SPAWN_P = 0.55          # SOURCED range 50-60% for non-guaranteed chests (older seasons)
-EXPECTED_CHESTS_PER_SPOT = GUARANTEED_SHARE + (1 - GUARANTEED_SHARE) * RANDOM_SPAWN_P  # ~0.67
+# Chance a NON-guaranteed ("regular") chest spot has a chest this match. Checked 2026-11-28; Epic publishes no number,
+# every figure below is a press/community report, none is specific to Treasure Hunters (v43.00, Crossbones Isle):
+#   50%      Ch2 S4 v14.00 "reduced the spawn rate of Standard Chests to 50%"   https://fortnite.fandom.com/wiki/Chest
+#   40-55% -> 60%  Chapter 7 hotfix (VideoGamer, ~Dec 2025, no Epic note cited)
+#            https://www.videogamer.com/news/fortnite-chest-spawn-buff-delivers-a-major-loot-upgrade/
+#   60% -> 67% "reportedly", Ch7 S3 balance update (GameRiv, 2026-06-07, unsourced)
+#            https://gameriv.com/fortnite-chapter-7-season-3-balance-update-all-nerfs-buffs-and-changes/
+# 0.60 = the lower Chapter 7 report (was 0.55 from older seasons). compare_planners.py spawn --regular-p checks 0.45-0.67.
+RANDOM_SPAWN_P = 0.60
+# Buried / dig spots: NO source gives a spawn chance (searched 2026-11-28; guides only count spots, 14 to 62 per map,
+# e.g. https://www.igeeksblog.com/fortnite-treasure-hunters-buried-chest-locations/, 2026-11-13). GUESS: a coin flip,
+# a bit below a regular chest, because a dig spot you can't see costs a detour to check.
+BURIED_SPAWN_P = 0.5
+# What the planner counts each spot as (expected chests). "guaranteed" / "guaranteed_rare" are the CSV's guaranteed
+# spots (SOURCED as always spawning by the same guides as GUARANTEED_SHARE).
+SPAWN_P = {"regular": RANDOM_SPAWN_P, "guaranteed": 1.0, "guaranteed_rare": 1.0, "buried": BURIED_SPAWN_P}
+EXPECTED_CHESTS_PER_SPOT = GUARANTEED_SHARE + (1 - GUARANTEED_SHARE) * RANDOM_SPAWN_P  # ~0.71
 
 # --- Drop and storm (all GUESS: nothing published for Crossbones Isle) -------
 BUS_SPEED = 30.0          # m/s along its straight path. GUESS (bus crosses the map in ~70 s)

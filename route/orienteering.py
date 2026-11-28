@@ -10,6 +10,11 @@ NP-hard: no known algorithm solves every case fast, so
   but only for ~15 chests (2^15 subsets x 15 end points), and
 * ``ils_best`` is a fast heuristic (greedy insertion + 2-opt + ruin-and-recreate
   iterated local search) for the whole map. Tests compare the two.
+
+Prize-collecting: not every spot spawns a chest, so both take an optional ``prize``
+(one number per node of ``T``, e.g. the chance a chest spawns there) and maximise the
+total prize (expected chests) instead of the count, ties going to the shorter route.
+``prize=None`` (the default) is every node worth 1: exactly the old behaviour.
 """
 
 from __future__ import annotations
@@ -27,15 +32,23 @@ def route_time(T, route, stop=P.CHEST_STOP_S):
     return float(legs + stop * len(route))
 
 
+def route_prize(route, prize=None):
+    """Total prize of a route: its length when every node is worth 1 (``prize=None``)."""
+    if prize is None:
+        return len(route)
+    return float(sum(prize[c] for c in route))
+
+
 # --------------------------------------------------------------------------
 # Exact: DP over subsets
 # --------------------------------------------------------------------------
 
-def exact_best(T, start, candidates, budget, stop=P.CHEST_STOP_S):
+def exact_best(T, start, candidates, budget, stop=P.CHEST_STOP_S, prize=None):
     """Optimal route from ``start`` using only ``candidates`` (<= ~16 nodes).
 
     dp[mask][j] = least time to start at ``start``, open exactly the chests in
-    ``mask``, and be standing at chest j. Return the best route found.
+    ``mask``, and be standing at chest j. Return the best route found (most
+    prize, then least time; prize None = every chest worth 1).
     """
     nodes = [start] + [c for c in candidates if c != start]
     k = len(nodes)
@@ -49,7 +62,12 @@ def exact_best(T, start, candidates, budget, stop=P.CHEST_STOP_S):
     best_mask, best_end, best_cnt, best_t = 1, 0, 1, stop
     if stop > budget:
         return [], 0.0
-    popcount = [bin(m).count("1") for m in range(full)]
+    worth = np.ones(k) if prize is None else np.asarray([prize[n] for n in nodes], dtype=float)
+    bits = np.arange(full)
+    popcount = np.zeros(full)
+    for b in range(k):
+        popcount[(bits >> b) & 1 == 1] += worth[b]
+    best_cnt = worth[0]
     for mask in range(1, full, 2):  # start (bit 0) always in the mask
         row = dp[mask]
         live = np.nonzero(row <= budget)[0]
@@ -58,7 +76,7 @@ def exact_best(T, start, candidates, budget, stop=P.CHEST_STOP_S):
         cnt = popcount[mask]
         for j in live:
             t = row[j]
-            if cnt > best_cnt or (cnt == best_cnt and t < best_t):
+            if cnt > best_cnt + 1e-9 or (cnt > best_cnt - 1e-9 and t < best_t):
                 best_mask, best_end, best_cnt, best_t = mask, j, cnt, t
         # extend to every chest not yet in mask
         outside = [n for n in range(1, k) if not mask >> n & 1]
@@ -87,12 +105,15 @@ def exact_best(T, start, candidates, budget, stop=P.CHEST_STOP_S):
 # Heuristic: iterated local search
 # --------------------------------------------------------------------------
 
-def _insert_greedy(T, route, pool, budget, stop, rng=None, noise=0.0):
+def _insert_greedy(T, route, pool, budget, stop, rng=None, noise=0.0, prize=None):
     """Keep inserting the chest that adds the least time, while it fits.
 
     With ``noise`` > 0 the choice is randomised a little (each option's cost is
-    scaled by 1..1+noise) so repeated runs explore different chest sets.
+    scaled by 1..1+noise) so repeated runs explore different chest sets. With a
+    ``prize`` it inserts the chest with the most prize per added second instead.
     """
+    if prize is not None:
+        return _insert_greedy_prize(T, route, pool, budget, stop, rng, noise, prize)
     route = list(route)
     pool = set(pool) - set(route)
     t = route_time(T, route, stop)
@@ -124,6 +145,40 @@ def _insert_greedy(T, route, pool, budget, stop, rng=None, noise=0.0):
             break
         route, t = new_route, new_t
         pool.discard(best_c)
+    return route
+
+
+def _insert_greedy_prize(T, route, pool, budget, stop, rng, noise, prize):
+    """Prize-collecting greedy: among chests that still fit, insert (at its cheapest spot) the one with the most
+    prize per added second, added second = extra walking + the stop."""
+    route = list(route)
+    pool = set(pool) - set(route)
+    t = route_time(T, route, stop)
+    while pool:
+        cand = np.fromiter(pool, dtype=int)
+        r = np.asarray(route)
+        add = T[r[-1], cand].astype(float)               # append at the end
+        where = np.full(len(cand), len(route))
+        if len(r) >= 2:
+            a, b = r[:-1], r[1:]
+            delta = T[np.ix_(a, cand)] + T[np.ix_(cand, b)].T - T[a, b][:, None]  # (L-1, m)
+            pos = delta.argmin(axis=0)
+            ins = delta[pos, range(len(cand))]
+            inner = ins <= add                           # ties go inside, like the unweighted version
+            add = np.where(inner, ins, add)
+            where = np.where(inner, pos + 1, where)
+        fits = t + add + stop <= budget + 1e-9
+        if not fits.any():
+            break
+        score = (add + stop) / np.maximum(prize[cand], 1e-9)   # seconds per expected chest: lower is better
+        if noise:
+            score = score * (1 + noise * np.array([rng.random() for _ in score]))
+        score[~fits] = np.inf
+        m = int(score.argmin())
+        c, at = int(cand[m]), int(where[m])
+        route = route[:at] + [c] + route[at:]
+        t = route_time(T, route, stop)
+        pool.discard(c)
     return route
 
 
@@ -170,14 +225,45 @@ def _or_opt(T, route):
     return route
 
 
-def _swap_out(T, route, pool, stop):
-    """Swap a chest in the route for one outside it when that saves time."""
+def _swap_out(T, route, pool, stop, budget=None, prize=None):
+    """Swap a chest in the route for one outside it when that saves time (with a ``prize``: when it gains prize
+    and still fits the budget, or keeps the prize and saves time)."""
     route = list(route)
     inside = set(route)
     outside = [c for c in pool if c not in inside]
     if not outside:
         return route
     out = np.asarray(outside)
+    if prize is not None:
+        t = route_time(T, route, stop)
+        p_out = prize[out]
+        if len(route) < 2:
+            return route
+        # one vectorised pass finds the positions with any swap worth trying (usually none at a local optimum)
+        r = np.asarray(route)
+        prev, xs = r[:-1], r[1:]
+        tail = np.zeros((1, len(out)))
+        old_all = T[prev, xs] + np.append(T[xs[:-1], r[2:]], 0.0)
+        new_all = T[np.ix_(prev, out)] + np.vstack([T[np.ix_(out, r[2:])].T, tail])
+        gain_all = p_out[None, :] - prize[xs][:, None]
+        ok_all = (new_all <= budget + 1e-9 - t + old_all[:, None]) & (
+            (gain_all > 1e-9) | ((gain_all > -1e-9) & (new_all < old_all[:, None] - 1e-9)))
+        for i in (np.flatnonzero(ok_all.any(axis=1)) + 1).tolist():
+            prev, nxt = route[i - 1], (route[i + 1] if i + 1 < len(route) else None)
+            x = route[i]
+            old = T[prev, x] + (T[x, nxt] if nxt is not None else 0.0)
+            new = T[prev, out] + T[out, nxt] if nxt is not None else T[prev, out]
+            gain = p_out - prize[x]
+            ok = (new <= budget + 1e-9 - t + old) & ((gain > 1e-9) | ((gain > -1e-9) & (new < old - 1e-9)))
+            if not ok.any():
+                continue
+            gain = np.where(ok, gain, -np.inf)
+            top = gain >= gain.max() - 1e-9                          # most prize gained, then least time
+            k = int(np.where(top, new, np.inf).argmin())
+            t += new[k] - old
+            route[i] = int(out[k])
+            out[k], p_out[k] = x, prize[x]
+        return route
     for i in range(1, len(route)):
         prev, nxt = route[i - 1], (route[i + 1] if i + 1 < len(route) else None)
         x = route[i]
@@ -191,33 +277,44 @@ def _swap_out(T, route, pool, stop):
     return route
 
 
-def _improve(T, route, pool, budget, stop):
+def _improve(T, route, pool, budget, stop, prize=None):
     for _ in range(4):
         before = route_time(T, route, stop)
-        before_count = len(route)
+        before_prize = route_prize(route, prize)
         route = _two_opt(T, route)
         route = _or_opt(T, route)
-        route = _swap_out(T, route, pool, stop)
-        route = _insert_greedy(T, route, pool, budget, stop)
-        if route_time(T, route, stop) >= before - 1e-9 and len(route) == before_count:
+        route = _swap_out(T, route, pool, stop, budget, prize)
+        route = _insert_greedy(T, route, pool, budget, stop, prize=prize)
+        if route_time(T, route, stop) >= before - 1e-9 and route_prize(route, prize) <= before_prize + 1e-9:
             break
     return route
 
 
-def _better(T, r1, r2, stop):
-    """True if r1 beats r2: more chests, or same chests in less time."""
-    if len(r1) != len(r2):
-        return len(r1) > len(r2)
+def _better(T, r1, r2, stop, prize=None):
+    """True if r1 beats r2: more prize (chests), or the same in less time."""
+    p1, p2 = route_prize(r1, prize), route_prize(r2, prize)
+    if abs(p1 - p2) > 1e-9:
+        return p1 > p2
     return route_time(T, r1, stop) < route_time(T, r2, stop) - 1e-9
 
 
-def ils_best(T, start, candidates, budget, stop=P.CHEST_STOP_S, iters=300, seed=0):
-    """Fast near-optimal route (iterated local search)."""
+def ils_best(T, start, candidates, budget, stop=P.CHEST_STOP_S, iters=300, seed=0, prize=None):
+    """Fast near-optimal route (iterated local search).
+
+    ``prize``: optional array indexed like ``T`` (e.g. spawn chance per spot); the route then maximises total
+    prize (expected chests), ties to the shorter route. None = every chest worth 1 (the old objective)."""
     if stop > budget:
         return [], 0.0
+    if prize is not None:
+        prize = np.asarray(prize, dtype=float)
     rng = random.Random(seed)
     pool = [c for c in candidates if c != start and T[start, c] + 2 * stop <= budget]
-    best = _improve(T, _insert_greedy(T, [start], pool, budget, stop), pool, budget, stop)
+    best = _improve(T, _insert_greedy(T, [start], pool, budget, stop, prize=prize), pool, budget, stop, prize)
+    if prize is not None:
+        # also start from the plain least-time fill (dense clusters): per-second greedy alone often misses it
+        plain = _improve(T, _insert_greedy(T, [start], pool, budget, stop), pool, budget, stop, prize)
+        if _better(T, plain, best, stop, prize):
+            best = plain
     current = best
     for _ in range(iters):
         r = list(current)
@@ -239,11 +336,13 @@ def ils_best(T, start, candidates, budget, stop=P.CHEST_STOP_S, iters=300, seed=
                 for idx in sorted(rng.sample(range(1, len(r)), min(k, len(r) - 1)), reverse=True):
                     del r[idx]
         # recreate
-        r = _insert_greedy(T, r, pool, budget, stop, rng=rng, noise=0.6)
-        r = _improve(T, r, pool, budget, stop)
-        if len(r) >= len(current) or rng.random() < 0.05:  # plateau moves allowed
+        # weighted: recreate half the time by least added time, then let swaps/inserts trade for prize
+        fill = prize if prize is None or rng.random() < 0.5 else None
+        r = _insert_greedy(T, r, pool, budget, stop, rng=rng, noise=0.6, prize=fill)
+        r = _improve(T, r, pool, budget, stop, prize)
+        if route_prize(r, prize) >= route_prize(current, prize) - 1e-9 or rng.random() < 0.05:  # plateau moves
             current = r
-        if _better(T, current, best, stop):
+        if _better(T, current, best, stop, prize):
             best = current
     return best, route_time(T, best, stop)
 

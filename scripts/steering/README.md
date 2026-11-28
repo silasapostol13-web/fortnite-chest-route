@@ -119,6 +119,30 @@ different choice sends it to another area). The extra "all changes" on the repla
 walked up to chests. End-to-end `live.py` on PS5 part 3 (recording): locks on, reaches chests, 0 reroutes. **Not yet
 proven in a live game** (no PS5 until he's home).
 
+### Expected chests, not spots (2026-11-28, live default)
+
+Not every spot spawns a chest, so the planner now counts each spot as its spawn chance (`params.SPAWN_P`: guaranteed
+and guaranteed rare 1.0, regular 0.60, buried 0.5 guess; sources in `params.py`) and maximises **expected chests** in
+the 2 minutes, which sends him to sure chests first. `ils_best(..., prize=)` is the prize-collecting version (greedy
+inserts the most expected chests per added second, also tries the plain least-time fill, swaps trade a regular for a
+guaranteed when it fits); `prize=None` is the old count, bit-identical. `Planner(weighted=False)` = the old planner.
+
+`compare_planners.py spawn`: every run first draws which spots really have a chest (per-kind chance, seeded); only
+those open (2 s), an empty spot costs the walk plus 1 s. Same 12 starts x 4 spawn draws for both planners
+(`out/steering/spawn-v3.json`):
+
+| frozen, follows the arrow | count every spot (old) | expected chests (new) |
+|---|---|---|
+| Chests opened at 2 / 5 / 10 min | 14.8 / 36.5 / 70.0 | **16.0 / 37.1 / 72.1** (+8% / +2% / +3%) |
+| Worst start vs old (mean of 4 draws, 10 min) | | -4.6% (8 starts better, 3 worse) |
+| Plan time p50 / p95 | 33 / 48 ms | 35 / 50 ms |
+
+If the real regular rate differs from the planner's 0.60 (12 starts x 3 draws, `spawn-v3-regular*.json`): at 0.45
++6.3% at 10 min, worst start -2.4%; at 0.67 only +1.3%, worst start **-8.9%** (6 of 12 starts worse).
+
+Caveat: one early choice can still send a run to a different area, so single starts swing -5% to +20%. A softer
+weighting (spawn chance ^ 0.5) was worse (+1% at 10 min) and isn't used.
+
 ## Full-map route prototype (`--route tour`, 2026-11-27, NOT the default)
 
 `tour.py`: one open travelling-salesman path through all 1,006 spots (nearest-first, then 2-opt + Or-opt in numpy,

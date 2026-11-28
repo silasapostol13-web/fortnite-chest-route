@@ -134,6 +134,28 @@ def test_heuristic_matches_exact_on_small_cases(seed):
     assert len(set(rh)) == len(rh) and rh[0] == 0
 
 
+def test_prize_prefers_sure_chest():
+    # from 0: a sure chest 10 s one way, or two 50% chests 10 and 12 s the other way; budget fits only one side.
+    # Count says go for the two; expected chests (1.0 vs 0.5 + 0.5, tie -> shorter) says the sure one.
+    xy = [0, 10, -10, -12]
+    T = line_matrix(xy)
+    prize = np.array([1.0, 1.0, 0.5, 0.5])
+    assert len(exact_best(T, 0, [1, 2, 3], 16, stop=1)[0]) == 3
+    for solve in (exact_best, ils_best):
+        route, _ = solve(T, 0, [1, 2, 3], 16, stop=1, prize=prize)
+        assert route == [0, 1]
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_prize_heuristic_matches_exact(seed):
+    T = random_instance(13, seed)
+    prize = np.random.default_rng(seed).choice([1.0, 0.6, 0.5], size=13)
+    re_, _ = exact_best(T, 0, list(range(13)), 40.0, stop=1, prize=prize)
+    rh, th = ils_best(T, 0, list(range(13)), 40.0, stop=1, iters=150, seed=seed, prize=prize)
+    assert th <= 40.0 + 1e-9 and rh[0] == 0 and len(set(rh)) == len(rh)
+    assert sum(prize[rh]) == pytest.approx(sum(prize[re_]))
+
+
 def test_routes_respect_budget_on_real_map():
     from route.travel import travel_matrix
     T = travel_matrix()

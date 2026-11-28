@@ -7,9 +7,18 @@ replay   his real positions from a ``live.py --metrics`` file, fed through both 
          these recordings, so this measures how stable the arrow is under real movement, not chests opened.
 sim      a simulated player who runs the Dijkstra path to whatever the arrow says (optionally wandering off
          to the nearest chest 20% of the time), 10 minutes from several starts: chests opened per 10 min.
+spawn    the same follower, but each run first draws which spots really have a chest (seeded, per-kind chance,
+         ``params.SPAWN_P`` unless --regular-p / --buried-p override it). Only spawned chests open (2 s); an empty
+         spot costs the walk there plus --empty-seconds to see it's empty. Same starts x spawn seeds for every
+         planner, so the comparison is paired. Default: frozen_count (every spot = 1, the old objective) vs frozen
+         (spots weighted by spawn chance, the live default since 2026-11-28).
+
+Planner names: now / frozen / frozen_strict / tour use the weighted planner (live default); add ``_count`` (e.g.
+``frozen_count``) for the old count-every-spot planner, or ``_p05`` for weights p ** 0.5 (``_p07`` = 0.7).
 
     python scripts/steering/compare_planners.py replay TRACE.json [...] --out out/steering/planner-compare.json
     python scripts/steering/compare_planners.py sim --out out/steering/planner-sim.json
+    nice -n 10 python scripts/steering/compare_planners.py spawn --starts 12 --spawn-seeds 3 --out out/steering/spawn.json
 """
 
 from __future__ import annotations
@@ -37,6 +46,31 @@ M = params.METERS_PER_PX
 ARRIVE_M, ARRIVE_S, PASS_M, PASS_S = 8.0, 1.5, 6.0, 1.5
 HOLD_S, PLAN_EVERY = 3.0, 1.0
 PLANNERS = ["now", "frozen"]
+BASES = {}          # weight power -> replan.Planner (1 = weighted live default, 0 = the old count-every-spot one)
+
+
+def power_of(name):
+    """``frozen`` = 1 (spawn-chance weights), ``frozen_count`` = 0 (every spot 1), ``frozen_p05`` = 0.5 (p ** 0.5)."""
+    if name.endswith("_count"):
+        return 0.0
+    tail = name.rsplit("_", 1)[-1]
+    return int(tail[1:]) / 10 ** (len(tail) - 2) if len(tail) > 1 and tail[0] == "p" and tail[1:].isdigit() else 1.0
+
+
+def base_name(name):
+    tail = name.rsplit("_", 1)[-1]
+    return name.rsplit("_", 1)[0] if name.endswith("_count") or (tail[:1] == "p" and tail[1:].isdigit()) else name
+
+
+def base_for(name):
+    power = power_of(name)
+    if power not in BASES:
+        ref = BASES[1.0]
+        BASES[power] = Planner(ref_terrain[0], spots=(ref.xy, ref.kinds), weighted=power > 0, weight_power=power)
+    return BASES[power]
+
+
+ref_terrain = []
 
 
 def arrive_radius(target, last_reached, meters=ARRIVE_M):
@@ -52,11 +86,12 @@ class Arm:
 
     def __init__(self, name, base, terrain):
         self.name, self.base, self.terrain = name, base, terrain
-        if name.startswith("frozen"):
+        kind = base_name(name)
+        if kind.startswith("frozen"):
             from frozen import FrozenPlanner
-            self.tour = FrozenPlanner(base, terrain, fresh_each_chest=name != "frozen_strict")
+            self.tour = FrozenPlanner(base, terrain, fresh_each_chest=kind != "frozen_strict")
         else:
-            self.tour = TourPlanner(base, terrain) if name == "tour" else None
+            self.tour = TourPlanner(base, terrain) if kind == "tour" else None
         self.visited, self.opened = set(), 0
         self.target = None
         self.last_plan = float("-inf")
@@ -206,7 +241,7 @@ def replay(paths, base, terrain):
             if not dedup or p != dedup[-1][1]:
                 dedup.append((t, p))
         seconds = dedup[-1][0] - dedup[0][0]
-        arms = [Arm(name, base, terrain) for name in PLANNERS]
+        arms = [Arm(name, base_for(name), terrain) for name in PLANNERS]
         history = []
         for t, p in dedup:
             history.append((t, p))
@@ -233,8 +268,12 @@ def walk_path(terrain, a, b):
     return line, max(seconds, straight), length
 
 
-def simulate(name, base, terrain, start, seconds=600, dt=0.5, wander=0.0, seed=0, noise_m=1.2):
+def simulate(name, base, terrain, start, seconds=600, dt=0.5, wander=0.0, seed=0, noise_m=1.2,
+             spawned=None, spawn_p=None, empty_s=1.0):
+    """``spawned``: set of spots that really have a chest this run (None = every spot does). ``spawn_p``: the true
+    chance per spot, for the expected-chests count."""
     rng = random.Random(seed)
+    checked_at = []          # (t, true spawn chance) for every spot he reached
     arm = Arm(name, base, terrain)
     pos = tuple(start)
     goal = line = None
@@ -275,15 +314,18 @@ def simulate(name, base, terrain, start, seconds=600, dt=0.5, wander=0.0, seed=0
                 line[0] = (line[0][0] + (line[1][0] - line[0][0]) * f, line[0][1] + (line[1][1] - line[0][1]) * f)
                 left = 0
         pos = line[0]
-        if len(line) == 1:       # at the goal: open it
-            stop_left = params.CHEST_STOP_S
+        if len(line) == 1:       # at the goal: open it (or see it's empty)
+            has = spawned is None or goal in spawned
+            stop_left = params.CHEST_STOP_S if has else empty_s
             if goal not in arm.visited:
                 if goal == arm.target:
-                    arm.deal(goal, True, t, "reached")
+                    arm.deal(goal, has, t, "reached")
                 else:
-                    arm.deal(goal, True, t, "found")
-            opened += 1
-            opened_at.append(t)
+                    arm.deal(goal, has, t, "found")
+            checked_at.append((t, 1.0 if spawn_p is None else float(spawn_p[goal])))
+            if has:
+                opened += 1
+                opened_at.append(t)
             line = None
             own_goal = False
             goal = None
@@ -298,7 +340,73 @@ def simulate(name, base, terrain, start, seconds=600, dt=0.5, wander=0.0, seed=0
     out = summarise(arm, history, seconds)
     out["opened"] = opened
     out["opened_2_5_10"] = [sum(x <= m * 60 for x in opened_at) for m in (2, 5, 10)]
+    out["checked_2_5_10"] = [sum(x <= m * 60 for x, _ in checked_at) for m in (2, 5, 10)]
+    out["expected_2_5_10"] = [round(sum(p for x, p in checked_at if x <= m * 60), 2) for m in (2, 5, 10)]
+    if arm.tour is not None:
+        solves = [ms for _, ms, _ in arm.tour.solves] + [ms for _, ms, _ in getattr(arm.tour, "extends", [])]
+        solves = np.asarray(solves) if solves else np.zeros(1)
+        out["solve_ms_p50"], out["solve_ms_p95"] = round(float(np.median(solves)), 1), round(float(np.percentile(solves, 95)), 1)
+        out["solve_ms"] = solves.round(1).tolist()
     return out
+
+
+def draw_spawns(kinds, spawn_p, seed):
+    """Which spots have a chest this run: one coin per spot, in spot order, so every planner sees the same draw."""
+    rng = random.Random(10_000 + seed)
+    return {i for i in range(len(kinds)) if rng.random() < spawn_p[i]}
+
+
+def spawn_runs(terrain, starts, spawn_seeds, minutes, truth, empty_s, wander):
+    """Paired runs: every planner from every start under every spawn draw."""
+    base = BASES[1.0]
+    spawn_p = np.array([truth.get(k, params.RANDOM_SPAWN_P) for k in base.kinds])
+    runs = []
+    for s in range(spawn_seeds):
+        spawned = draw_spawns(base.kinds, spawn_p, s)
+        for k, start in enumerate(starts):
+            for name in PLANNERS:
+                started = time.process_time()
+                r = simulate(name, base_for(name), terrain, start, seconds=minutes * 60, wander=wander, seed=k,
+                             spawned=spawned, spawn_p=spawn_p, empty_s=empty_s)
+                r.update({"planner": name, "start": k, "spawn_seed": s, "wander": wander,
+                          "cpu_s": round(time.process_time() - started, 1)})
+                runs.append(r)
+                print(json.dumps({key: r.get(key) for key in ("planner", "start", "spawn_seed", "opened_2_5_10",
+                                                          "expected_2_5_10", "checked_2_5_10", "solve_ms_p50",
+                                                          "solve_ms_p95", "plan_ms_p50", "plan_ms_p95", "cpu_s")}),
+                      flush=True)
+    return runs
+
+
+def spawn_table(runs):
+    """Means per planner, per-start means (over spawn seeds) and the worst start's ratio to the first planner."""
+    names = list(dict.fromkeys(r["planner"] for r in runs))
+    table = {}
+    for name in names:
+        rs = [r for r in runs if r["planner"] == name]
+        solves = np.concatenate([np.asarray(r.get("solve_ms", [0.0])) for r in rs])
+        plan = [r["plan_ms_p50"] for r in rs], [r["plan_ms_p95"] for r in rs]
+        per_start = {}
+        for r in rs:
+            per_start.setdefault(r["start"], []).append(r["opened_2_5_10"][2])
+        table[name] = {"runs": len(rs),
+                       "opened_2_5_10": [round(float(np.mean([r["opened_2_5_10"][i] for r in rs])), 2) for i in range(3)],
+                       "expected_2_5_10": [round(float(np.mean([r["expected_2_5_10"][i] for r in rs])), 2) for i in range(3)],
+                       "checked_2_5_10": [round(float(np.mean([r["checked_2_5_10"][i] for r in rs])), 2) for i in range(3)],
+                       "solve_ms_p50": round(float(np.median(solves)), 1),
+                       "solve_ms_p95": round(float(np.percentile(solves, 95)), 1),
+                       "plan_ms_p50_median": round(float(np.median(plan[0])), 1),
+                       "plan_ms_p95_median": round(float(np.median(plan[1])), 1),
+                       "opened_10_by_start": {k: round(float(np.mean(v)), 2) for k, v in sorted(per_start.items())}}
+    ref = table[names[0]]["opened_10_by_start"]
+    for name in names[1:]:
+        mine = table[name]["opened_10_by_start"]
+        ratios = {k: round(mine[k] / ref[k], 3) for k in ref if ref[k]}
+        table[name]["vs_" + names[0]] = {"mean_ratio": round(table[name]["opened_2_5_10"][2] / table[names[0]]["opened_2_5_10"][2], 3),
+                                         "worst_start_ratio": min(ratios.values()), "by_start": ratios,
+                                         "starts_better": sum(v > 1 for v in ratios.values()),
+                                         "starts_worse": sum(v < 1 for v in ratios.values())}
+    return table
 
 
 def drift(base, terrain, pairs=120, seed=3, noise_m=1.2):
@@ -318,7 +426,7 @@ def drift(base, terrain, pairs=120, seed=3, noise_m=1.2):
     for name in PLANNERS:
         changes, flipped = [], 0
         for k, (a, b) in enumerate(found):
-            arm = Arm(name, base, terrain)
+            arm = Arm(name, base_for(name), terrain)
             noise = random.Random(k)
             targets = []
             for step in range(61):                       # 30 m of drift at most, 0.5 m/s
@@ -340,18 +448,40 @@ def drift(base, terrain, pairs=120, seed=3, noise_m=1.2):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("replay", "sim", "drift"))
+    parser.add_argument("mode", choices=("replay", "sim", "drift", "spawn"))
     parser.add_argument("traces", nargs="*")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--starts", type=int, default=6)
     parser.add_argument("--minutes", type=float, default=10)
-    parser.add_argument("--planners", default="now,frozen", help="Comma list of now, frozen, tour")
+    parser.add_argument("--planners", default=None,
+                        help="Comma list of now, frozen, frozen_strict, tour (+ _count for the old unweighted planner)")
+    parser.add_argument("--spawn-seeds", type=int, default=3)
+    parser.add_argument("--regular-p", type=float, default=None, help="spawn mode: true chance a regular spot has a chest")
+    parser.add_argument("--buried-p", type=float, default=None, help="spawn mode: true chance a dig spot has a chest")
+    parser.add_argument("--empty-seconds", type=float, default=1.0, help="spawn mode: seconds to see a spot is empty")
+    parser.add_argument("--wander", type=float, default=0.0, help="spawn mode: chance he wanders to the nearest spot")
     args = parser.parse_args()
     global PLANNERS
-    PLANNERS = args.planners.split(",")
+    PLANNERS = (args.planners or ("frozen_count,frozen" if args.mode == "spawn" else "now,frozen")).split(",")
     terrain = LegPather(planner_source.MAP_IMAGE, planner_source.MAP_SIZE)
     base = Planner(terrain)
-    if args.mode == "replay":
+    BASES[1.0] = base
+    ref_terrain.append(terrain)
+    if args.mode == "spawn":
+        rng = random.Random(7)
+        land = [i for i, k in enumerate(base.kinds) if k != "buried"]
+        starts = [tuple(base.xy[i] + 3) for i in rng.sample(land, args.starts)]
+        truth = dict(params.SPAWN_P)
+        if args.regular_p is not None:
+            truth["regular"] = args.regular_p
+        if args.buried_p is not None:
+            truth["buried"] = args.buried_p
+        runs = spawn_runs(terrain, starts, args.spawn_seeds, args.minutes, truth, args.empty_seconds, args.wander)
+        table = spawn_table(runs)
+        print(json.dumps(table, indent=1), flush=True)
+        result = {"truth": truth, "planner_weights": dict(params.SPAWN_P), "empty_seconds": args.empty_seconds,
+                  "starts": [list(map(float, s)) for s in starts], "table": table, "runs": runs}
+    elif args.mode == "replay":
         result = replay(args.traces, base, terrain)
     elif args.mode == "drift":
         result = drift(base, terrain)
@@ -363,7 +493,7 @@ def main():
         for wander in (0.0, 0.2):
             for k, start in enumerate(starts):
                 for name in PLANNERS:
-                    r = simulate(name, base, terrain, start, seconds=args.minutes * 60, wander=wander, seed=k)
+                    r = simulate(name, base_for(name), terrain, start, seconds=args.minutes * 60, wander=wander, seed=k)
                     r.update({"planner": name, "start": k, "wander": wander})
                     result["runs"].append(r)
                     print(json.dumps({key: r.get(key) for key in ("planner", "start", "wander", "opened_2_5_10",

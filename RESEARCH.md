@@ -16,6 +16,10 @@ Checked 2026-11-24. Every number lives in `route/params.py`. **SOURCED** = someo
 - Non-guaranteed chests spawn about **50-60%** of the time (numbers from older seasons:
   [Fortnite wiki](https://fortnite.fandom.com/wiki/Chest), VideoGamer). So one spawn spot is worth about
   0.27 + 0.73 x 0.55 = **0.67 real chests** on average. A route through 38 spots means about 26 chests.
+- Update 2026-11-28: Chapter 7 reports put it at 60% ([VideoGamer](https://www.videogamer.com/news/fortnite-chest-spawn-buff-delivers-a-major-loot-upgrade/),
+  hotfix, no Epic note) and "reportedly" 67% from Ch7 S3 ([GameRiv](https://gameriv.com/fortnite-chapter-7-season-3-balance-update-all-nerfs-buffs-and-changes/),
+  2026-06-07). None is Treasure Hunters-specific; `params.py` now uses 0.60. No source gives a spawn chance for
+  buried / dig spots; 0.5 is a guess. The live planner now weights each spot by these (see `scripts/steering/README.md`).
 
 ## Movement
 

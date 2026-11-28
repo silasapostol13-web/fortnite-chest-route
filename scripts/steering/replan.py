@@ -13,6 +13,11 @@ arrow uses (land runs, water swims):
 
 A small hysteresis keeps the current target unless the new plan opens more
 chests or saves real time, so the arrow doesn't flip between two equal choices.
+
+Not every spot spawns a chest, so by default (``weighted=True``) each spot counts as
+its spawn chance (``params.SPAWN_P`` by kind: guaranteed 1, regular / buried less) and
+the plan maximises EXPECTED chests, which sends him to sure chests first.
+``weighted=False`` is the old count-every-spot-as-1 planner.
 """
 
 from __future__ import annotations
@@ -31,7 +36,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from route import params, planner_source  # noqa: E402
-from route.orienteering import ils_best, route_time  # noqa: E402
+from route.orienteering import ils_best, route_prize, route_time  # noqa: E402
 from route.travel import cell_of, compute_travel_matrix, dijkstra_within  # noqa: E402
 
 CACHE_DIR = ROOT / "data" / "cache"
@@ -72,8 +77,13 @@ class Planner:
     """Computes the best chest order from a position. Pure and synchronous."""
 
     def __init__(self, terrain, budget=120.0, pool=45, reach=75.0, iters=30,
-                 switch_seconds=4.0, spots=None):
+                 switch_seconds=4.0, spots=None, weighted=True, weight_power=1.0):
         self.xy, self.kinds = spots if spots is not None else load_spots()
+        self.weighted = weighted
+        # expected chests per spot (spawn chance by kind); all 1 = the old objective. weight_power < 1 softens it
+        # (p ** power: 0 = count every spot, 1 = pure expected chests).
+        self.prize = np.array([params.SPAWN_P.get(k, params.RANDOM_SPAWN_P) ** weight_power if weighted else 1.0
+                               for k in self.kinds])
         self.graph = terrain.graph
         self.cells = [cell_of(x, y) for x, y in self.xy]
         self.T = chest_matrix(terrain, self.xy)
@@ -110,7 +120,7 @@ class Planner:
             M = self.T[np.ix_(nodes, nodes)].copy()
             np.fill_diagonal(M, 0.0)
             order, _ = ils_best(M, 0, list(range(1, len(nodes))), left + self.stop, self.stop,
-                                iters=self.iters, seed=0)
+                                iters=self.iters, seed=0, prize=self.prize[nodes] if self.weighted else None)
             order = order or [0]
             return [nodes[i] for i in order], float(times[current] + route_time(M, order, self.stop))
         n = len(cands)
@@ -119,8 +129,9 @@ class Planner:
         M[1:, 1:] = self.T[np.ix_(cands, cands)]
         np.fill_diagonal(M, 0.0)
         # route_time counts a stop at node 0 (the player); add it back to the budget.
+        prize = np.concatenate([[0.0], self.prize[cands]]) if self.weighted else None   # node 0 = the player
         order, _ = ils_best(M, 0, list(range(1, n + 1)), self.budget + self.stop, self.stop,
-                            iters=self.iters, seed=0)
+                            iters=self.iters, seed=0, prize=prize)
         order = [cands[i - 1] for i in order[1:]]
         seconds = route_time(M, [0] + [1 + list(cands).index(c) for c in order], self.stop) - self.stop
         return order, seconds
@@ -142,7 +153,9 @@ class Planner:
         if current is None or current in visited or not best or best[0] == current or current not in cands:
             return best, best_t, bool(best) and best[0] != current
         kept, kept_t = self._solve(times, cands, first=cands.index(current))
-        if allow_switch and (len(best) > len(kept) or (len(best) == len(kept) and best_t < kept_t - self.switch_seconds)):
+        # switch for at least half a chest more (unweighted: one more chest), or as many in switch_seconds less time
+        gain = route_prize(best, self.prize) - route_prize(kept, self.prize)
+        if allow_switch and (gain > 0.5 or (gain > -1e-9 and best_t < kept_t - self.switch_seconds)):
             return best, best_t, True
         return kept, kept_t, False
 
