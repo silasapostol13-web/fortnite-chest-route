@@ -157,20 +157,96 @@ class Feed:
 
 
 def heading(frame, process):
-    crop = cv2.resize(frame[14:46, 921:999], (390, 160), interpolation=cv2.INTER_CUBIC)
-    ok, png = cv2.imencode(".png", crop)
+    """Compass bearing from the number above the strip (Apple Vision OCR). Live test 2026-11-28 misses: white digits on
+    bright sky / foam read as nothing (retry on a white-only mask), quest markers and cardinals beside the number
+    ("13 205", "188 S"), and 9 read as g ("2g3")."""
+    box = frame[14:46, 921:999]
+    heading.raw = ""
+    value = parse_heading(ocr(cv2.resize(box, (390, 160), interpolation=cv2.INTER_CUBIC), process))
+    if value is None:
+        lo = box.min(axis=2)
+        spread = box.max(axis=2).astype(int) - lo
+        ink = ((lo > 225) & (spread < 40)).astype("uint8") * 255            # the digits are pure white
+        ink = cv2.dilate(ink, np.ones((2, 2), np.uint8))
+        clean = cv2.cvtColor(255 - ink, cv2.COLOR_GRAY2BGR)                  # black digits on white
+        raw = heading.raw
+        value = parse_heading(ocr(cv2.resize(clean, (390, 160), interpolation=cv2.INTER_CUBIC), process))
+        heading.raw = raw + " | " + heading.raw
+    return value
+
+
+def ocr(image, process, keep=True):
+    ok, png = cv2.imencode(".png", image)
     if not ok:
-        return None
+        return ""
     process.stdin.write(b64encode(png).decode() + "\n")
     process.stdin.flush()
     reply = process.stdout.readline()
     if not reply:
         raise RuntimeError("Compass worker exited")
-    match = re.fullmatch(r"[^0-9A-Za-z]*(\d{1,3})[^0-9A-Za-z]*", reply.strip())
-    return int(match[1]) % 360 if match and int(match[1]) <= 360 else None
+    if keep:
+        heading.raw = reply.strip()             # kept for the metrics (why a read failed)
+    return reply.strip()
+
+
+def parse_heading(text):
+    """The bearing is the longest number in the box (marker digits are single); g is a misread 9."""
+    numbers = [n for n in re.findall(r"\d+", text.replace("g", "9")) if len(n) <= 3 and int(n) <= 360]
+    if not numbers:
+        return None
+    longest = max(len(n) for n in numbers)
+    best = {n for n in numbers if len(n) == longest}
+    return int(best.pop()) % 360 if len(best) == 1 else None
+
+
+def minimap_mask(mini):
+    """1 where the minimap shows the map itself, 0 where something is drawn over it: place-name labels (white
+    letters, black outline), the storm's magenta tint, purple/pink markers, white pins. Those flipped the land mask
+    and broke the match inside named places (live test 2026-11-28, Lil' Uzi's Stronghold: 67% fixes)."""
+    b, g, r = cv2.split(mini.astype("float32"))
+    hi, lo = np.maximum(np.maximum(r, g), b), np.minimum(np.minimum(r, g), b)
+    white = (lo > 175) & (hi - lo < 45)
+    dark = hi < 70
+    magenta = (r > 110) & (b > 110) & (g < .78 * np.minimum(r, b))
+    covered = (white | dark | magenta).astype("uint8")
+    covered = cv2.dilate(covered, np.ones((5, 5), np.uint8))
+    return (1 - covered).astype("float32")
 
 
 def locate(frame, atlas, prior):
+    """Masked minimap match (see minimap_mask); falls back to the plain match when little of the minimap is clear."""
+    mini = frame[36:276, 1638:1886]
+    template = cv2.resize(land(mini), None, fx=.99, fy=.99, interpolation=cv2.INTER_AREA)
+    mask = cv2.resize(minimap_mask(mini), (template.shape[1], template.shape[0]), interpolation=cv2.INTER_NEAREST)
+    if mask.mean() > .97 or mask.mean() < .15:
+        return locate_plain(frame, atlas, prior)
+    height, width = atlas.shape
+
+    def match(region, x0, y0):
+        result = cv2.matchTemplate(region, template, cv2.TM_CCOEFF_NORMED, mask=mask)
+        result[~np.isfinite(result)] = -1
+        _, score, _, (x, y) = cv2.minMaxLoc(result)
+        return ((x + x0 + 122 * .99) * 1500 / width, (y + y0 + 121 * .99) * 1500 / height), score
+
+    if prior is not None:
+        x, y = round(prior[0] * width / 1500), round(prior[1] * height / 1500)
+        x0, y0 = max(0, x - 185), max(0, y - 185)
+        position, score = match(atlas[y0:min(height, y + 185), x0:min(width, x + 185)], x0, y0)
+        if score >= .75:
+            return position, score
+    return far_jump_check(match(atlas, 0, 0), prior)
+
+
+def far_jump_check(found, prior, meters=60.0, need=.85):
+    """A whole-map match far from where he just was is a teleport unless it's very sure: a half-covered minimap
+    once matched 290 m away at 0.73 for 8 s (live test 2026-11-28)."""
+    position, score = found
+    if prior is not None and score < need and dist(position, prior) * params.METERS_PER_PX > meters:
+        return position, min(score, .69)
+    return position, score
+
+
+def locate_plain(frame, atlas, prior):
     mini = frame[36:276, 1638:1886]
     template = cv2.resize(land(mini), None, fx=.99, fy=.99, interpolation=cv2.INTER_AREA)
     height, width = atlas.shape
@@ -185,7 +261,7 @@ def locate(frame, atlas, prior):
         position, score = match(atlas[y0:min(height, y + 185), x0:min(width, x + 185)], x0, y0)
         if score >= .75:
             return position, score
-    return match(atlas, 0, 0)
+    return far_jump_check(match(atlas, 0, 0), prior)
 
 
 def next_waypoint(terrain, player, chest, meters=12.0):
@@ -202,6 +278,7 @@ def next_waypoint(terrain, player, chest, meters=12.0):
 
 
 # Where the game's own HUD sits in a 1920x1080 frame. The same numbers place the HUD's extras.
+HOLD_HEADING_S, HOLD_POSITION_S = .8, 1.6   # how long a heading / position fix stays good
 MINIMAP = (1638, 36, 248, 240)          # x, y, width, height of the minimap crop
 MINIMAP_PLAYER = (122, 121)             # the player's spot inside that crop
 COMPASS = (958.5, 58, 3.5625)           # strip centre x, strip bottom y, pixels per degree (measured, see README)
@@ -518,6 +595,9 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
     processed = frames_written = 0
     last_frame = None
     reported_lock = False
+    loc_score = head_pending = None
+    next_xp = last_xp = float("-inf")
+    confirmed = 0
     next_hud_update = float("-inf")
     started = monotonic()
     try:
@@ -540,23 +620,54 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
                 media_time = arrived - started
             if args.duration and media_time >= args.duration:
                 break
+            if args.input_crop:                 # e.g. a shoot take: the whole Remote Play window, bars included
+                w, h, x, y = args.input_crop
+                frame = frame[y:y + h, x:x + w]
             if frame.shape[:2] != (1080, 1920):
                 frame = cv2.resize(frame, (1920, 1080))
             last_frame = frame
             result = None
             if marks and media_time >= marks[0][0]:
                 _, result = marks.pop(0)
-            head_updated = position_updated = routed = False
+            head_updated = position_updated = routed = head_tried = False
+            loop_start = monotonic()
+            ocr_ms = loc_ms = None
             if media_time >= next_head:
+                head_tried = True
                 next_head = media_time + .10
+                tick = monotonic()
                 value = heading(frame, process)
+                ocr_ms = (monotonic() - tick) * 1000
                 if value is not None:
-                    yaw, last_yaw, head_updated = value, arrived, True
+                    # One misread ("29" for 293) would swing the arrow: accept a read near the last one, or two reads
+                    # in a row that agree (a real fast spin), or anything once the last one is old.
+                    near = lambda a, b, limit: min(abs(a - b), 360 - abs(a - b)) <= limit
+                    if yaw is None or arrived - last_yaw > .6 or near(value, yaw, 75) or \
+                            (head_pending is not None and near(value, head_pending, 25)):
+                        yaw, last_yaw, head_updated, head_pending = value, arrived, True, None
+                    else:
+                        head_pending = value
             if media_time >= next_pos:
                 next_pos = media_time + .40
-                value, score = locate(frame, atlas, player)
+                tick = monotonic()
+                value, score = locate(frame, atlas, player if arrived - last_pos < 3.0 else None)   # stale prior: free search
+                loc_ms = (monotonic() - tick) * 1000
+                loc_score = score
                 if score >= .70:
                     player, last_pos, position_updated = value, arrived, True
+            # The game's own "+600 XP / CHEST" popup (right of centre, ~2 s) = he really opened a chest: count it and
+            # move the arrow on at once instead of waiting out the arrive timer. Read only near a chest spot.
+            xp_chest = False
+            if player is not None and media_time >= next_xp and route.target() is not None and \
+                    dist(player, route.target()) * params.METERS_PER_PX <= 20:
+                next_xp = media_time + .5
+                words = ocr(frame[180:480, 1050:1570], process, keep=False).upper()
+                if "CHEST" in words and media_time - last_xp > 2.5:
+                    last_xp, xp_chest = media_time, True
+                    confirmed += 1
+                    print(f"Chest opened (game said +XP CHEST): {confirmed} confirmed.", flush=True)
+                    if result is None:
+                        result = "found"
             while commands:
                 command = commands.pop(0)
                 if command == "back":
@@ -575,7 +686,7 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
                 if message:
                     route_key = near_since = None
                     print(message, flush=True)
-            events = route.update(player if arrived - last_pos < .85 else None, position_updated, media_time)
+            events = route.update(player if arrived - last_pos < HOLD_POSITION_S else None, position_updated, media_time)
             if events.get("replanned"):
                 replanned_until = media_time + .3
                 near_since = None
@@ -584,7 +695,7 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
                 print("Rerouting: left the route; new order from here.", flush=True)
             target = route.target()
             route_ms = 0.0
-            if player is not None and target is not None and arrived - last_pos < .85:
+            if player is not None and target is not None and arrived - last_pos < HOLD_POSITION_S:
                 key = cell_of(*player), route.key
                 if key != route_key:
                     tick = monotonic()
@@ -594,8 +705,9 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
                     route_key, routed = key, True
             tracked = player is not None and waypoint is not None and target is not None and yaw is not None
             now = monotonic()
-            tracked = tracked and now - last_yaw <= .35 and now - last_pos <= .85
-            if args.arrive_seconds > 0 and target is not None and player is not None and now - last_pos <= .85:
+            # Hold the last fix through short misses (was .35 / .85 s: two missed minimap matches = FINDING SIGNAL).
+            tracked = tracked and now - last_yaw <= HOLD_HEADING_S and now - last_pos <= HOLD_POSITION_S
+            if args.arrive_seconds > 0 and target is not None and player is not None and now - last_pos <= HOLD_POSITION_S:
                 if dist(player, target) * params.METERS_PER_PX <= arrive_radius(target, last_reached, args.arrive_meters):
                     near_since = media_time if near_since is None else near_since
                     if media_time - near_since >= args.arrive_seconds:
@@ -626,6 +738,17 @@ def run(args, ocr_binary, window_helper=None, hud_path=None, render_binary=None)
                           "route_ms": round(route_ms, 2), "frame_age_ms": round(latency_ms, 2)}
                 if result:
                     sample["mark"] = result
+                if loc_score is not None:
+                    sample["loc_score"], loc_score = round(float(loc_score), 3), None
+                if xp_chest:
+                    sample["xp_chest"] = confirmed
+                sample["loop_ms"] = round((monotonic() - loop_start) * 1000, 1)
+                if ocr_ms is not None:
+                    sample["ocr_ms"] = round(ocr_ms, 1)
+                if loc_ms is not None:
+                    sample["loc_ms"] = round(loc_ms, 1)
+                if head_tried and not head_updated:
+                    sample["head_raw"] = getattr(heading, "raw", "")
                 if isinstance(route, LiveRoute):
                     sample.update({"spot": route.key, "planned": len(route.plan), "opened": route.opened})
                     for name in ("plan_ms", "replanned", "rerouted", "passed"):
@@ -686,6 +809,8 @@ def main():
     inputs.add_argument("--remote-play", action="store_true", help="Capture only the largest visible PS Remote Play window")
     inputs.add_argument("--window-id", type=int, help="Capture only this macOS window ID")
     inputs.add_argument("--list-windows", action="store_true", help="List capturable windows and their IDs")
+    parser.add_argument("--input-crop", type=lambda value: tuple(map(int, value.split(":"))), metavar="W:H:X:Y",
+                        help="Gameplay rectangle in --input frames, source pixels (shoot takes: 3024:1701:0:98)")
     parser.add_argument("--window-crop", type=lambda value: tuple(map(int, value.split(":"))),
                         metavar="W:H:X:Y", help="Gameplay rectangle in the 1920px-wide captured window")
     parser.add_argument("--start", type=float, default=0)
